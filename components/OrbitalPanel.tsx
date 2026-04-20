@@ -92,6 +92,10 @@ export default function OrbitalPanel({
   const [submitting, setSubmitting] = useState(false);
 
   const hasSuggestion = Boolean(suggestion);
+  const isPending = decision === "pending";
+  const isAccepted = decision === "accepted";
+  const isRejected = decision === "rejected";
+  const canReopenSuggestion = !isPending;
   const topCandidates = useMemo(() => rankedCandidates.slice(0, 3), [rankedCandidates]);
 
   async function submitDecision(action: SuggestionDecision | "reset") {
@@ -118,6 +122,80 @@ export default function OrbitalPanel({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function renderDecisionBanner() {
+    if (isAccepted) {
+      return (
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 12,
+            background: "#ECFDF5",
+            border: "1px solid #A7F3D0",
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#047857", marginBottom: 6 }}>
+            Caso resuelto
+          </div>
+          <div style={{ fontSize: 13, color: "#065F46", lineHeight: 1.6 }}>
+            La sugerencia ha sido aceptada. El hueco operativo ya se considera cubierto.
+          </div>
+        </div>
+      );
+    }
+
+    if (isRejected) {
+      return (
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 12,
+            background: "#FEF2F2",
+            border: "1px solid #FECACA",
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#B91C1C", marginBottom: 6 }}>
+            Caso descartado
+          </div>
+          <div style={{ fontSize: 13, color: "#7F1D1D", lineHeight: 1.6 }}>
+            La sugerencia ha sido rechazada. Puedes reabrir el caso si necesitas volver a evaluarlo.
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  function renderReopenButton() {
+    if (!canReopenSuggestion) {
+      return null;
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={() => void submitDecision("reset")}
+        disabled={submitting}
+        style={{
+          flex: 1,
+          minWidth: 160,
+          borderRadius: 12,
+          padding: "12px 14px",
+          background: "#FFFFFF",
+          color: "#0F172A",
+          fontWeight: 700,
+          border: "1px solid #CBD5E1",
+          cursor: submitting ? "not-allowed" : "pointer",
+          opacity: submitting ? 0.7 : 1,
+        }}
+      >
+        Volver a pendiente
+      </button>
+    );
   }
 
   return (
@@ -173,7 +251,7 @@ export default function OrbitalPanel({
         </div>
 
         <div style={{ padding: 20 }}>
-          {!hasSuggestion ? (
+          {!hasSuggestion && isPending ? (
             <div
               style={{
                 padding: 14,
@@ -187,8 +265,22 @@ export default function OrbitalPanel({
             >
               No hay una sugerencia activa ahora mismo. El motor sigue monitorizando la agenda.
             </div>
-          ) : (
+          ) : null}
+
+          {!hasSuggestion && !isPending ? (
             <>
+              {renderDecisionBanner()}
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                {renderReopenButton()}
+              </div>
+            </>
+          ) : null}
+
+          {hasSuggestion && suggestion ? (
+            <>
+              {renderDecisionBanner()}
+
               <div
                 style={{
                   padding: 14,
@@ -203,16 +295,16 @@ export default function OrbitalPanel({
                 </div>
 
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
-                  Llamar a {suggestion!.patient} para {suggestion!.type}
+                  Llamar a {suggestion.patient} para {suggestion.type}
                 </div>
 
                 <div style={{ fontSize: 12, color: "#475569", marginTop: 6, lineHeight: 1.6 }}>
-                  Hueco: {suggestion!.start} · {suggestion!.gabinete} ·{" "}
-                  {suggestion!.durationSlots * 30} min
+                  Hueco: {suggestion.start} · {suggestion.gabinete} ·{" "}
+                  {suggestion.durationSlots * 30} min
                 </div>
 
                 <div style={{ fontSize: 12, color: "#475569", marginTop: 4, lineHeight: 1.6 }}>
-                  Valor estimado: €{suggestion!.value}
+                  Valor estimado: €{suggestion.value}
                 </div>
               </div>
 
@@ -233,47 +325,55 @@ export default function OrbitalPanel({
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => void submitDecision("accepted")}
-                  disabled={submitting}
-                  style={{
-                    flex: 1,
-                    border: "none",
-                    borderRadius: 12,
-                    padding: "12px 14px",
-                    background: "#10B981",
-                    color: "white",
-                    fontWeight: 700,
-                    cursor: submitting ? "not-allowed" : "pointer",
-                    opacity: submitting ? 0.7 : 1,
-                  }}
-                >
-                  Aceptar
-                </button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                {isPending ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void submitDecision("accepted")}
+                      disabled={submitting}
+                      style={{
+                        flex: 1,
+                        minWidth: 160,
+                        border: "none",
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        background: "#10B981",
+                        color: "white",
+                        fontWeight: 700,
+                        cursor: submitting ? "not-allowed" : "pointer",
+                        opacity: submitting ? 0.7 : 1,
+                      }}
+                    >
+                      Aceptar
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={() => void submitDecision("rejected")}
-                  disabled={submitting}
-                  style={{
-                    flex: 1,
-                    border: "none",
-                    borderRadius: 12,
-                    padding: "12px 14px",
-                    background: "#EF4444",
-                    color: "white",
-                    fontWeight: 700,
-                    cursor: submitting ? "not-allowed" : "pointer",
-                    opacity: submitting ? 0.7 : 1,
-                  }}
-                >
-                  Rechazar
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => void submitDecision("rejected")}
+                      disabled={submitting}
+                      style={{
+                        flex: 1,
+                        minWidth: 160,
+                        border: "none",
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        background: "#EF4444",
+                        color: "white",
+                        fontWeight: 700,
+                        cursor: submitting ? "not-allowed" : "pointer",
+                        opacity: submitting ? 0.7 : 1,
+                      }}
+                    >
+                      Rechazar
+                    </button>
+                  </>
+                ) : null}
+
+                {renderReopenButton()}
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -325,7 +425,8 @@ export default function OrbitalPanel({
                       #{index + 1} · {candidate.name}
                     </div>
                     <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
-                      {candidate.treatment} · {candidate.durationSlots * 30} min · €{candidate.value}
+                      {candidate.treatment} · {candidate.durationSlots * 30} min · €
+                      {candidate.value}
                     </div>
                   </div>
 

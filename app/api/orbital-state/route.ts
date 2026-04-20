@@ -5,13 +5,32 @@ import {
   buildOrbitalState,
   SuggestionDecision,
 } from "@/lib/orbital-engine";
-import { Appointment, AppointmentStatus, WaitingPatient } from "@/data/mock";
+import { AppointmentStatus, WaitingPatient } from "@/data/mock";
+import {
+  countTodayAppointments,
+  calculateOccupancy,
+} from "@/lib/dashboard-metrics";
+
+const TOTAL_AVAILABLE_SLOTS = 9;
+
+type AppointmentView = {
+  id: number;
+  start: string;
+  gabinete: string;
+  patient: string;
+  type: string;
+  durationSlots: number;
+  status: AppointmentStatus;
+  value: number;
+};
 
 async function ensureSeeded() {
   const clinic = await prisma.clinicSettings.findUnique({ where: { id: 1 } });
+
   if (!clinic) {
     await seedDemoData();
   }
+
   await prisma.runtimeState.upsert({
     where: { id: 1 },
     update: {},
@@ -23,7 +42,12 @@ async function loadStateData() {
   const [appointmentsRaw, waitingPatientsRaw, gabinetesRaw, runtime] =
     await Promise.all([
       prisma.appointment.findMany({
-        include: { gabinete: true, patient: true, dentist: true, treatmentType: true },
+        include: {
+          gabinete: true,
+          patient: true,
+          dentist: true,
+          treatmentType: true,
+        },
         orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
       }),
       prisma.patient.findMany({
@@ -31,11 +55,15 @@ async function loadStateData() {
         include: { waitingTreatment: true, preferredGabinete: true },
         orderBy: { id: "asc" },
       }),
-      prisma.gabinete.findMany({ where: { active: true }, orderBy: { name: "asc" } }),
+      prisma.gabinete.findMany({
+        where: { active: true },
+        orderBy: { name: "asc" },
+      }),
       prisma.runtimeState.findUnique({ where: { id: 1 } }),
     ]);
 
-  const appointments: Appointment[] = appointmentsRaw.map((a) => ({
+  const appointments: AppointmentView[] = appointmentsRaw.map((a) => ({
+    id: a.id,
     start: a.startTime,
     gabinete: a.gabinete.name,
     patient: a.patient.name,
@@ -49,6 +77,7 @@ async function loadStateData() {
     const fallbackDurationSlots = p.waitingTreatment?.duration
       ? Math.max(1, Math.round(p.waitingTreatment.duration / 30))
       : 1;
+
     return {
       name: p.name,
       treatment: p.waitingTreatment?.name ?? "Sin tratamiento",
@@ -69,9 +98,20 @@ async function loadStateData() {
 
 export async function GET() {
   await ensureSeeded();
-  const { appointments, waitingList, gabinetes, decision } = await loadStateData();
+
+  const { appointments, waitingList, gabinetes, decision } =
+    await loadStateData();
+
   const state = buildOrbitalState(appointments, waitingList, decision);
-  return NextResponse.json({ ...state, gabinetes });
+
+  const metrics = {
+    appointmentsCount: countTodayAppointments(appointments),
+    occupancy: calculateOccupancy(appointments, TOTAL_AVAILABLE_SLOTS),
+    recoveredGaps: state.recoveredGaps,
+    recoveredRevenue: state.recoveredRevenue,
+  };
+
+  return NextResponse.json({ ...state, gabinetes, metrics });
 }
 
 export async function POST(request: NextRequest) {
@@ -86,7 +126,11 @@ export async function POST(request: NextRequest) {
       update: { suggestionDecision: "pending" },
       create: { id: 1, suggestionDecision: "pending" },
     });
-  } else if (action === "accepted" || action === "rejected" || action === "pending") {
+  } else if (
+    action === "accepted" ||
+    action === "rejected" ||
+    action === "pending"
+  ) {
     await prisma.runtimeState.upsert({
       where: { id: 1 },
       update: { suggestionDecision: action },
@@ -96,7 +140,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Acción no válida" }, { status: 400 });
   }
 
-  const { appointments, waitingList, gabinetes, decision } = await loadStateData();
+  const { appointments, waitingList, gabinetes, decision } =
+    await loadStateData();
+
   const state = buildOrbitalState(appointments, waitingList, decision);
-  return NextResponse.json({ ...state, gabinetes });
+
+  const metrics = {
+    appointmentsCount: countTodayAppointments(appointments),
+    occupancy: calculateOccupancy(appointments, TOTAL_AVAILABLE_SLOTS),
+    recoveredGaps: state.recoveredGaps,
+    recoveredRevenue: state.recoveredRevenue,
+  };
+
+  return NextResponse.json({ ...state, gabinetes, metrics });
 }

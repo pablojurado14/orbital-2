@@ -1,0 +1,50 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const appointmentId = Number(body?.appointmentId);
+
+    if (!appointmentId || Number.isNaN(appointmentId)) {
+      return NextResponse.json(
+        { error: "appointmentId inválido" },
+        { status: 400 }
+      );
+    }
+
+    const existingAppointment = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+    });
+
+    if (!existingAppointment) {
+      return NextResponse.json(
+        { error: "Cita no encontrada" },
+        { status: 404 }
+      );
+    }
+
+    if (existingAppointment.status === "cancelled") {
+      return NextResponse.json(
+        { error: "La cita ya está cancelada" },
+        { status: 400 }
+      );
+    }
+
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: "cancelled" },
+    });
+
+    revalidatePath("/");
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("Error cancelando cita:", error);
+    return NextResponse.json(
+      { error: "No se pudo cancelar la cita" },
+      { status: 500 }
+    );
+  }
+}

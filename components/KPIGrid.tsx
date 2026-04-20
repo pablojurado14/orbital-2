@@ -1,63 +1,77 @@
-export default function KPIGrid({
-  recoveredRevenue,
-  recoveredGaps,
-}: {
-  recoveredRevenue: number;
-  recoveredGaps: number;
-}) {
-  const cardStyle = {
-    background: "#FFFFFF",
-    padding: 20,
-    borderRadius: 14,
-    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-  };
+import React from "react";
 
-  const labelStyle = {
-    fontSize: 12,
-    color: "#6B7280",
-    marginBottom: 6,
+interface KPIGridProps {
+  metrics: {
+    appointmentsCount: number;
+    occupancy: number;
+    recoveredGaps: number;
+    recoveredRevenue: number;
   };
+}
 
-  const valueStyle = {
-    fontSize: 24,
-    fontWeight: 700 as const,
-    color: "#0F172A",
-  };
+type KPIItem = {
+  label: string;
+  value: string;
+  accent: string;
+  accentBg: string;
+  marker: string;
+};
+
+export const KPIGrid: React.FC<KPIGridProps> = ({ metrics }) => {
+  const { appointmentsCount, occupancy, recoveredGaps, recoveredRevenue } = metrics;
+
+  const kpis: KPIItem[] = [
+    {
+      label: "Ocupación",
+      value: `${occupancy}%`,
+      accent: "text-blue-700",
+      accentBg: "bg-blue-50",
+      marker: "OC",
+    },
+    {
+      label: "Citas hoy",
+      value: appointmentsCount.toString(),
+      accent: "text-purple-700",
+      accentBg: "bg-purple-50",
+      marker: "CI",
+    },
+    {
+      label: "Huecos recuperados",
+      value: recoveredGaps.toString(),
+      accent: "text-green-700",
+      accentBg: "bg-green-50",
+      marker: "HR",
+    },
+    {
+      label: "Ingresos recuperados",
+      value: `${recoveredRevenue}€`,
+      accent: "text-orange-700",
+      accentBg: "bg-orange-50",
+      marker: "IR",
+    },
+  ];
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr)",
-        gap: 16,
-        marginBottom: 24,
-      }}
-    >
-      <div style={cardStyle}>
-        <div style={labelStyle}>Ocupación</div>
-        <div style={valueStyle}>87%</div>
-      </div>
+    <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {kpis.map((kpi) => (
+        <div
+          key={kpi.label}
+          className="rounded-xl border border-slate-100 bg-white p-6 shadow-sm"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <div
+              className={`flex h-11 w-11 items-center justify-center rounded-lg text-sm font-bold ${kpi.accentBg} ${kpi.accent}`}
+            >
+              {kpi.marker}
+            </div>
+          </div>
 
-      <div style={cardStyle}>
-        <div style={labelStyle}>Citas hoy</div>
-        <div style={valueStyle}>24</div>
-      </div>
-
-      <div style={cardStyle}>
-        <div style={labelStyle}>Huecos recuperados</div>
-        <div style={valueStyle}>{recoveredGaps}</div>
-      </div>
-
-      <div
-        style={{
-          ...cardStyle,
-          background: "#0F2744",
-          color: "white",
-        }}
-      >
-        <div style={{ ...labelStyle, color: "#94A3B8" }}>Ingresos</div>
-        <div style={{ ...valueStyle, color: "#00C2C7" }}>€{recoveredRevenue}</div>
-      </div>
+          <div>
+            <p className="text-sm font-medium text-slate-500">{kpi.label}</p>
+            <h3 className="text-2xl font-bold text-slate-900">{kpi.value}</h3>
+          </div>
+        </div>
+      ))}
     </div>
   );
-}
+};

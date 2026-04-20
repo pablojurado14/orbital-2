@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
+import { KPIGrid } from "@/components/KPIGrid";
 import AgendaGrid from "@/components/AgendaGrid";
 import OrbitalPanel from "@/components/OrbitalPanel";
-import KPIGrid from "@/components/KPIGrid";
+
+type SuggestionDecision = "pending" | "accepted" | "rejected";
 
 type AppointmentStatus =
   | "confirmed"
@@ -12,15 +14,24 @@ type AppointmentStatus =
   | "cancelled"
   | "suggested";
 
-type EventType = "alert" | "info" | "warning" | "success";
-
 type Appointment = {
+  id?: number;
   start: string;
   gabinete: string;
   patient: string;
   type: string;
   durationSlots: number;
   status: AppointmentStatus;
+  value: number;
+};
+
+type Suggestion = {
+  start: string;
+  gabinete: string;
+  patient: string;
+  type: string;
+  durationSlots: number;
+  status: "confirmed" | "delayed" | "cancelled" | "suggested";
   value: number;
 };
 
@@ -41,6 +52,8 @@ type RankedCandidate = {
   };
 };
 
+type EventType = "alert" | "info" | "warning" | "success";
+
 type OrbitalEvent = {
   time: string;
   title: string;
@@ -48,137 +61,97 @@ type OrbitalEvent = {
   type: EventType;
 };
 
-type SuggestionDecision = "pending" | "accepted" | "rejected";
-
-type Suggestion = {
-  start: string;
-  gabinete: string;
-  patient: string;
-  type: string;
-  durationSlots: number;
-  status: AppointmentStatus;
-  value: number;
+type Metrics = {
+  appointmentsCount: number;
+  occupancy: number;
+  recoveredGaps: number;
+  recoveredRevenue: number;
 };
 
 type OrbitalStateResponse = {
+  metrics: Metrics;
   appointments: Appointment[];
-  gabinetes: string[];
   suggestion: Suggestion | null;
   rankedCandidates: RankedCandidate[];
   events: OrbitalEvent[];
   recommendationReason: string;
   recoveredRevenue: number;
   recoveredGaps: number;
-  decision?: SuggestionDecision;
+  decision: SuggestionDecision;
+  gabinetes: string[];
 };
 
-export default function Home() {
+export default function Dashboard() {
   const [state, setState] = useState<OrbitalStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  const loadState = useCallback(async () => {
+  async function fetchState() {
     try {
-      setLoading(true);
-      setError(null);
-
-      const response = await fetch("/api/orbital-state", {
-        method: "GET",
-        cache: "no-store",
-      });
+      const response = await fetch("/api/orbital-state");
 
       if (!response.ok) {
-        throw new Error("No se pudo cargar el estado de ORBITAL");
+        throw new Error("Error fetching orbital state");
       }
 
       const data = (await response.json()) as OrbitalStateResponse;
       setState(data);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Error desconocido al cargar el dashboard";
-      setError(message);
+    } catch (error) {
+      console.error("Error fetching state:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }
 
   useEffect(() => {
-    void loadState();
-  }, [loadState]);
+    void fetchState();
+  }, []);
+
+  if (loading || !state) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600"></div>
+          <p className="font-medium text-slate-500">Cargando Orbital 2.0...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: "#F5F1EB" }}>
+    <div className="flex h-screen bg-slate-50 font-sans text-slate-900">
       <Sidebar />
 
-      <main style={{ flex: 1, padding: 24 }}>
-        <div style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 28, marginBottom: 10, color: "#0F172A" }}>
-            Agenda del día
-          </h1>
-          <p style={{ color: "#666", marginBottom: 0 }}>
-            Vista en tiempo real — conectada al motor de decisión de ORBITAL
-          </p>
-        </div>
+      <main className="flex-1 overflow-y-auto p-8">
+        <header className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Panel de Control</h1>
+            <p className="text-slate-500">Optimización operativa en tiempo real</p>
+          </div>
+        </header>
 
-        {loading ? (
-          <div
-            style={{
-              background: "white",
-              borderRadius: 18,
-              border: "1px solid #E2E8F0",
-              padding: 24,
-              color: "#475569",
-            }}
-          >
-            Cargando dashboard...
-          </div>
-        ) : error || !state ? (
-          <div
-            style={{
-              background: "#FFF1F2",
-              borderRadius: 18,
-              border: "1px solid #FECDD3",
-              padding: 24,
-              color: "#9F1239",
-            }}
-          >
-            {error ?? "No se pudo cargar el estado del dashboard."}
-          </div>
-        ) : (
-          <>
-            <KPIGrid
-              recoveredRevenue={state.recoveredRevenue ?? 0}
-              recoveredGaps={state.recoveredGaps ?? 0}
+        <KPIGrid metrics={state.metrics} />
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <AgendaGrid
+              appointments={state.appointments}
+              gabinetes={state.gabinetes}
             />
+          </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) 360px",
-                gap: 24,
-                alignItems: "start",
-              }}
-            >
-              <section>
-                <AgendaGrid
-                  appointments={state.appointments ?? []}
-                  gabinetes={state.gabinetes ?? []}
-                />
-              </section>
-
-              <OrbitalPanel
-                suggestion={state.suggestion}
-                rankedCandidates={state.rankedCandidates ?? []}
-                events={state.events ?? []}
-                recommendationReason={state.recommendationReason ?? ""}
-                recoveredRevenue={state.recoveredRevenue ?? 0}
-                recoveredGaps={state.recoveredGaps ?? 0}
-                decision={state.suggestion ? "pending" : "accepted"}
-                onStateChange={(nextState) => setState(nextState)}
-              />
-            </div>
-          </>
-        )}
+          <div>
+            <OrbitalPanel
+              suggestion={state.suggestion}
+              rankedCandidates={state.rankedCandidates}
+              events={state.events}
+              recommendationReason={state.recommendationReason}
+              recoveredRevenue={state.recoveredRevenue}
+              recoveredGaps={state.recoveredGaps}
+              decision={state.decision}
+              onStateChange={setState}
+            />
+          </div>
+        </div>
       </main>
     </div>
   );

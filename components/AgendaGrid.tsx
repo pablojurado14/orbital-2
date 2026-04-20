@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { HOURS } from "@/data/mock";
 import { getAppointmentStyle, getStatusLabel } from "@/lib/orbital-engine";
 
@@ -10,6 +12,7 @@ type AppointmentStatus =
   | "suggested";
 
 type Appointment = {
+  id?: number;
   start: string;
   gabinete: string;
   patient: string;
@@ -28,7 +31,35 @@ const SLOT_HEIGHT = 64;
 const TIME_COLUMN_WIDTH = 92;
 
 export default function AgendaGrid({ appointments, gabinetes }: Props) {
+  const router = useRouter();
+  const [cancellingAppointmentId, setCancellingAppointmentId] = useState<number | null>(null);
+
   const totalHeight = HOURS.length * SLOT_HEIGHT;
+
+  async function cancelAppointment(appointmentId: number) {
+    try {
+      setCancellingAppointmentId(appointmentId);
+
+      const response = await fetch("/api/appointments/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ appointmentId }),
+      });
+
+      if (!response.ok) {
+        throw new Error("No se pudo cancelar la cita");
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+      alert("No se pudo cancelar la cita. Revisa la consola.");
+    } finally {
+      setCancellingAppointmentId(null);
+    }
+  }
 
   return (
     <div
@@ -141,6 +172,11 @@ export default function AgendaGrid({ appointments, gabinetes }: Props) {
                   const top = slotIndex * SLOT_HEIGHT + 4;
                   const height = Math.max(1, appointment.durationSlots) * SLOT_HEIGHT - 8;
                   const style = getAppointmentStyle(appointment.status);
+                  const canCancel =
+                    appointment.id !== undefined &&
+                    appointment.status !== "cancelled" &&
+                    appointment.status !== "suggested";
+                  const isCancelling = cancellingAppointmentId === appointment.id;
 
                   return (
                     <div
@@ -206,6 +242,27 @@ export default function AgendaGrid({ appointments, gabinetes }: Props) {
                       <div style={{ fontSize: 10, color: "#64748B", marginTop: 2 }}>
                         €{appointment.value}
                       </div>
+
+                      {canCancel ? (
+                        <button
+                          type="button"
+                          onClick={() => void cancelAppointment(appointment.id!)}
+                          disabled={isCancelling}
+                          style={{
+                            marginTop: 8,
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            color: "#DC2626",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            cursor: isCancelling ? "not-allowed" : "pointer",
+                            opacity: isCancelling ? 0.6 : 1,
+                          }}
+                        >
+                          {isCancelling ? "Cancelando..." : "Cancelar"}
+                        </button>
+                      ) : null}
                     </div>
                   );
                 })}
