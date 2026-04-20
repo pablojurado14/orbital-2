@@ -3,22 +3,102 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
 }
 
-model Clinic {
-  id        String   @id @default(cuid())
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  users     User[]
+model ClinicSettings {
+  id        Int           @id @default(1)
+  name      String        @default("Mi Clínica Dental")
+  schedules DaySchedule[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  clinicId  String
-  clinic    Clinic   @relation(fields: [clinicId], references: [id])
-  createdAt DateTime @default(now())
+model DaySchedule {
+  id             Int            @id @default(autoincrement())
+  dayOfWeek      Int
+  isOpen         Boolean        @default(true)
+  morningOpen    String?
+  morningClose   String?
+  afternoonOpen  String?
+  afternoonClose String?
+  clinicId       Int
+  clinic         ClinicSettings @relation(fields: [clinicId], references: [id])
+  @@unique([clinicId, dayOfWeek])
+}
+
+model Gabinete {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique
+  description  String?
+  active       Boolean       @default(true)
+  appointments Appointment[]
+  preferredBy  Patient[]     @relation("PatientPreferredGabinete")
+}
+
+model Dentist {
+  id           Int           @id @default(autoincrement())
+  name         String
+  specialty    String?
+  active       Boolean       @default(true)
+  appointments Appointment[]
+  preferredBy  Patient[]     @relation("PatientPreferredDentist")
+}
+
+model TreatmentType {
+  id              Int           @id @default(autoincrement())
+  name            String        @unique
+  duration        Int
+  color           String        @default("#E0F2FE")
+  price           Float?
+  active          Boolean       @default(true)
+  appointments    Appointment[]
+  waitingPatients Patient[]     @relation("PatientWaitingTreatment")
+}
+
+model Patient {
+  id                   Int           @id @default(autoincrement())
+  name                 String
+  phone                String?
+  email                String?
+  notes                String?
+  createdAt            DateTime      @default(now())
+  inWaitingList        Boolean       @default(false)
+  waitingTreatmentId   Int?
+  waitingDurationSlots Int?
+  waitingValue         Int?
+  priority             Int           @default(1)
+  availableNow         Boolean       @default(true)
+  easeScore            Int           @default(5)
+  preferredGabineteId  Int?
+  preferredDentistId   Int?
+  preferredGabinete    Gabinete?      @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
+  preferredDentist     Dentist?       @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
+  waitingTreatment     TreatmentType? @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
+  appointments         Appointment[]
+}
+
+model Appointment {
+  id              Int           @id @default(autoincrement())
+  startTime       String
+  date            DateTime
+  duration        Int
+  status          String        @default("scheduled")
+  value           Float?
+  notes           String?
+  patientId       Int
+  patient         Patient       @relation(fields: [patientId], references: [id])
+  dentistId       Int
+  dentist         Dentist       @relation(fields: [dentistId], references: [id])
+  gabineteId      Int
+  gabinete        Gabinete      @relation(fields: [gabineteId], references: [id])
+  treatmentTypeId Int
+  treatmentType   TreatmentType @relation(fields: [treatmentTypeId], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model RuntimeState {
+  id                 Int    @id
+  suggestionDecision String @default("pending")
 }
