@@ -84,19 +84,23 @@ type OrbitalStateResponse = {
 export default function Dashboard() {
   const [state, setState] = useState<OrbitalStateResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function fetchState() {
+    setError(null);
+    setLoading(true);
     try {
       const response = await fetch("/api/orbital-state");
 
       if (!response.ok) {
-        throw new Error("Error fetching orbital state");
+        throw new Error(`Error fetching orbital state (HTTP ${response.status})`);
       }
 
       const data = (await response.json()) as OrbitalStateResponse;
       setState(data);
-    } catch (error) {
-      console.error("Error fetching state:", error);
+    } catch (err) {
+      console.error("Error fetching state:", err);
+      setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
       setLoading(false);
     }
@@ -105,6 +109,26 @@ export default function Dashboard() {
   useEffect(() => {
     void fetchState();
   }, []);
+
+  if (error) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="mx-4 w-full max-w-md rounded-lg border border-red-200 bg-red-50 p-6 text-center">
+          <h2 className="mb-2 text-lg font-semibold text-red-700">
+            No se ha podido cargar el dashboard
+          </h2>
+          <p className="mb-4 break-words text-sm text-red-600">{error}</p>
+          <button
+            type="button"
+            onClick={() => void fetchState()}
+            className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+          >
+            Reintentar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (loading || !state) {
     return (
