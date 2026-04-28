@@ -6,6 +6,13 @@ import { getEventStyle } from "@/lib/orbital-engine";
 type EventType = "alert" | "info" | "warning" | "success";
 type SuggestionDecision = "pending" | "accepted" | "rejected";
 
+type Metrics = {
+  appointmentsCount: number;
+  occupancy: number;
+  recoveredGaps: number;
+  recoveredRevenue: number;
+};
+
 type RankedCandidate = {
   name: string;
   treatment: string;
@@ -57,6 +64,7 @@ type Appointment = {
 };
 
 type OrbitalStateResponse = {
+  metrics: Metrics;
   appointments: Appointment[];
   gabinetes: string[];
   suggestion: Suggestion | null;
@@ -65,7 +73,7 @@ type OrbitalStateResponse = {
   recommendationReason: string;
   recoveredRevenue: number;
   recoveredGaps: number;
-  decision?: SuggestionDecision;
+  decision: SuggestionDecision;
 };
 
 type Props = {
