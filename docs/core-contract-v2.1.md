@@ -1,22 +1,19 @@
 # ORBITAL Core — Contrato arquitectónico
 
-> **Versión:** 2.0
-> **Fecha:** 28-29 de abril de 2026
-> **Estado:** vinculante. Sustituye al v1.0.
-> **Bump from v1.0:** ampliación con tipos del modelo mental (`docs/orbital-engine-logic.md` ≡ `logica-reoptimizacion-saas.md`), 6 componentes del motor, 10 acciones primitivas componibles, 12 eventos de entrada. Invariantes y arquitectura del v1.0 conservados.
+> **Versión:** 2.1
+> **Fecha:** 28 de abril de 2026 (cierre Sesión 11A)
+> **Estado:** vinculante. Sustituye al v2.0.
+> **Bump from v2.0:** añadida §11.5 (multi-tenant lógico — Sesión 11A) y §13 path migratorio actualizado. Sin cambios en §1-§10 ni en los tipos del modelo mental.
 > **Política:** este contrato es vinculante. La implementación de Sesiones 12-17 debe respetarlo. Cambios al contrato requieren entrada fechada en §10 del master y bump de versión aquí.
-> **Referencia del master:** §1.2 tesis estratégica, §1.7 bis principios de diseño del motor, §7 bloque del motor (Sesiones 10-19).
+> **Referencia del master:** §1.2 tesis estratégica, §1.7 bis principios de diseño del motor, §6 roadmap del bloque del motor (Sesiones 11B-19).
 
 ---
 
-## 0. Cambios respecto al v1.0
+## 0. Cambios respecto al v2.0
 
-1. **§5 nuevo** — Tipos del modelo mental: `DurationDistribution`, `MinutesDistribution`, `DayState` y sub-estados, `KPIVector`, `PrimitiveAction` (10 variantes) + `CompositeAction`, `ValidationResult`, `SimulationResult`, `Explanation`, `CycleDecision`, `EngineEvent` (12 variantes).
-2. **§6 nuevo** — Mapeo de tipos a los 6 componentes (Predictor, Validator, Generator, Simulator, Scorer, Coordinator).
-3. **§7 nuevo** — Mapeo documento ES ↔ código TS.
-4. **§8 nuevo** — Apéndice con discrepancias entre el v1.0 markdown y la implementación real de Sesión 9 v1.0, resueltas en este v2.0.
-5. **§13 actualizado** — Path migratorio reformulado al bloque del motor (Sesiones 10-19) en lugar del migratorio S9-S11 del v1.0.
-6. **Tipos del v1.0 conservados sin cambios**: `ScheduledEvent`, `WaitingCandidate`, `Gap`, `RankedCandidate`, `ScoreBreakdown`, `Suggestion`, `EngineResult`, `ExplanationCode` (14 valores).
+1. **§11.5 nuevo** — Multi-tenant lógico vía `lib/tenant.ts`. El clean core sigue siendo agnóstico de tenant; el aislamiento se aplica en la capa de adaptación.
+2. **§13 actualizado** — Sesión 10 y Sesión 11A marcadas como cerradas. Path migratorio reflejando estado real.
+3. **§4-§10 sin cambios** — los tipos del modelo mental, los 6 componentes y el mapeo ES↔TS son estables desde v2.0.
 
 ---
 
@@ -44,42 +41,43 @@ El motor de ORBITAL es la pieza **reutilizable entre verticales** (dental → am
 - No asume unidades concretas de tiempo (no "slots de 30 min").
 - No devuelve colores, iconos, ni decisiones visuales.
 - No hace llamadas de red ni IO.
+- **No conoce el concepto de tenant (multi-tenant lógico vive en capa de adaptación, ver §11.5).**
 
 ---
 
-## 2. Principios rectores (sin cambios respecto al v1.0)
+## 2. Principios rectores
 
 ### 2.1 Pureza funcional
 
-Toda función exportada por el core es pura: mismo input → mismo output. Sin side effects, sin IO, sin acceso a `Date.now()` ni randomness interna. Si el motor necesita "ahora", se le pasa como parámetro.
+Toda función exportada por el core es pura: mismo input → mismo output. Sin side effects, sin IO, sin acceso a `Date.now()` ni randomness interna.
 
 ### 2.2 Abstracción de dominio total
 
-El core razona sobre primitivas universales (recurso, evento, duración, valor, distribución, restricción), no sobre conceptos de un vertical concreto. Si al leer el código del core pudieras adivinar que es "para dentistas", la abstracción ha fallado.
+El core razona sobre primitivas universales (recurso, evento, duración, valor, distribución, restricción), no sobre conceptos de un vertical concreto.
 
 ### 2.3 Códigos, no strings
 
-Todo output destinado a humanos sale del core como **código enumerable** (`ExplanationCode`, `ExplanationMotiveCode`, `DiscardReasonCode`, `ConstraintCode`, `ProjectedEventKind`, `CriticalPointKind`). La traducción a texto humano vive en la capa i18n.
+Todo output destinado a humanos sale del core como **código enumerable** (`ExplanationCode`, `ExplanationMotiveCode`, `DiscardReasonCode`, `ConstraintCode`, `ProjectedEventKind`, `CriticalPointKind`).
 
 ### 2.4 Contratos explícitos
 
-Los tipos del core se definen **en el core**. Las capas externas se adaptan al core, no al revés. Prohibido `import { ... } from "@/data/mock"` dentro de `core/`.
+Los tipos del core se definen **en el core**. Las capas externas se adaptan al core, no al revés.
 
 ### 2.5 Configurabilidad sobre hardcoding
 
-Lo que en motores anteriores estaba hardcoded (pesos, slot de 30 min, estrategia de detección) pasa a ser **configuración inyectada**.
+Pesos, slot, estrategia de detección — configuración inyectada, no hardcoded.
 
 ### 2.6 UTC interno, timezone externo
 
-Todos los timestamps dentro del core son **epoch ms en UTC**. La conversión a TZ del tenant vive en `ui/format.ts`.
+Todos los timestamps dentro del core son **epoch ms en UTC**.
 
-### 2.7 Robusto, no optimista (NUEVO en v2.0)
+### 2.7 Robusto, no optimista
 
-El Scorer (C5) penaliza varianza, no solo valor esperado. Una acción con valor esperado ligeramente peor pero menor varianza puede ganar. La varianza viene del Simulator (C4), calculada de las distribuciones p10/p90 del Predictor (C1).
+El Scorer (C5) penaliza varianza. Acciones con valor esperado peor pero menor varianza pueden ganar.
 
-### 2.8 Anytime, no exhaustivo (NUEVO en v2.0)
+### 2.8 Anytime, no exhaustivo
 
-El Generator (C3) opera con time-budget. Devuelve la mejor solución encontrada cuando se acaba el presupuesto, no busca el óptimo global. Filosofía de satisficing.
+El Generator (C3) opera con time-budget. Devuelve la mejor solución encontrada, no busca el óptimo global.
 
 ---
 
@@ -99,31 +97,29 @@ export const SLOT_30_MIN_MS: DurationMs = 30 * 60 * 1000;
 export const SLOT_15_MIN_MS: DurationMs = 15 * 60 * 1000;
 ```
 
-`tenantId`, `patientId`, `professionalId`, `roomId`, `equipmentId` se representan como `string` opacos en `lib/core/types.ts`. Si en el futuro hace falta type-safety adicional, se promueven a branded types en `primitives.ts` (cambio aditivo).
+`tenantId`, `patientId`, `professionalId`, `roomId`, `equipmentId` se representan como `string` opacos en `lib/core/types.ts`. Si en el futuro hace falta type-safety adicional, se promueven a branded types (cambio aditivo).
 
 ---
 
 ## 4. Tipos del v1.0 — base del clean core
 
-Definidos en `lib/core/types.ts`. Implementados en Sesión 9 v1.0, consumidos por `decideFillForGap` (función principal del v1.0). Conservan su forma exacta en v2.0.
+Definidos en `lib/core/types.ts`. Implementados en Sesión 9 v1.0. Conservan su forma exacta en v2.0/v2.1.
 
 - `EventStatus = "confirmed" | "delayed" | "cancelled" | "suggested"`
 - `DecisionState = "pending" | "accepted" | "rejected"`
 - `ExplanationCode` (14 valores) — códigos del Scorer v1.0 sin simulación.
 - `ExternalRefs = Readonly<Record<string, string>>`
-- `ScheduledEvent` { id, resourceId, start, duration, status, value?, externalRefs? }
-- `WaitingCandidate` { id, preferredResourceId?, desiredDuration, value, priority, easeScore, availableNow, externalRefs? }
-- `Gap` { resourceId, start, duration, originEventId }
-- `ScoreBreakdown` { value, fit, ease, availability, resource, priority }
-- `RankedCandidate` { candidateId, totalScore, breakdown, explanationCodes }
-- `Suggestion` { gap, recommended, alternatives }
-- `EngineResult` { suggestions, recoveredValue, recoveredGaps, decision }
-
-Estos tipos son la base sobre la que se construye el motor completo. Los componentes C1-C6 los consumen y los extienden con los tipos del modelo mental (§5), pero no los redefinen.
+- `ScheduledEvent { id, resourceId, start, duration, status, value?, externalRefs? }`
+- `WaitingCandidate { id, preferredResourceId?, desiredDuration, value, priority, easeScore, availableNow, externalRefs? }`
+- `Gap { resourceId, start, duration, originEventId }`
+- `ScoreBreakdown { value, fit, ease, availability, resource, priority }`
+- `RankedCandidate { candidateId, totalScore, breakdown, explanationCodes }`
+- `Suggestion { gap, recommended, alternatives }`
+- `EngineResult { suggestions, recoveredValue, recoveredGaps, decision }`
 
 ---
 
-## 5. Tipos del modelo mental — Sesión 10 (NUEVO en v2.0)
+## 5. Tipos del modelo mental (Sesión 10)
 
 ### 5.1 Distribuciones probabilísticas
 
@@ -150,11 +146,9 @@ export interface TimeRange {
 }
 ```
 
-**Uso**: el Predictor (C1) devuelve `DurationDistribution` para tiempos positivos (duración de procedimientos) y `MinutesDistribution` para señales firmadas (impuntualidad: negativo si llega antes, positivo si llega tarde). El Simulator (C4) consume ambas para construir varianza.
-
 ### 5.2 Estado del día
 
-`DayState` es el "tablero" reconstruido en cada ciclo del Coordinator (C6), agregado a partir de la base de datos. La política de Sesión 10 es reconstruir cada ciclo (no cachear) — robusto a caídas, escalable horizontalmente.
+`DayState` es el "tablero" reconstruido en cada ciclo del Coordinator (C6). Política Sesión 10: reconstruir cada ciclo (no cachear).
 
 ```typescript
 export interface DayState {
@@ -170,7 +164,7 @@ export interface DayState {
 }
 ```
 
-Sub-estados: `RoomState`, `ProfessionalState`, `EquipmentState`, `AppointmentState` (con `estimatedEndDistribution: DurationDistribution` y `detectedRisks: AppointmentRisks`). Definiciones completas en `lib/core/types.ts`.
+Sub-estados: `RoomState`, `ProfessionalState`, `EquipmentState`, `AppointmentState` (con `estimatedEndDistribution: DurationDistribution` y `detectedRisks: AppointmentRisks`).
 
 ### 5.3 Vector de KPIs
 
@@ -185,7 +179,7 @@ export interface KPIVector {
 }
 ```
 
-`risk` es **derivado**, no input directo: el Simulator (C4) lo calcula a partir de las varianzas de los demás KPIs, ponderadas según pesos de la clínica. Ver invariante I-12 en §12.2.
+`risk` es **derivado**, no input directo: el Simulator (C4) lo calcula a partir de las varianzas de los demás KPIs.
 
 ### 5.4 Acciones primitivas y compuestas
 
@@ -197,19 +191,19 @@ export interface KPIVector {
 export type CompositeAction = ReadonlyArray<PrimitiveAction>;
 ```
 
-Las acciones se **componen**: una solución típica es "mover López a Torres + invitar waitlist al hueco resultante de García". Helper `validateCompositionCoherence(c)` verifica coherencia estructural. `no_op` siempre presente como acción candidata explícita (invariante I-13 en §12.2).
+Helper `validateCompositionCoherence(c)` verifica coherencia estructural. `no_op` siempre presente como acción candidata explícita.
 
 ### 5.5 Validación de restricciones
 
 ```typescript
 export interface ValidationResult {
-  readonly valid: boolean;                // true si no hay hard violations
+  readonly valid: boolean;
   readonly hardViolations: ReadonlyArray<ConstraintViolation>;
   readonly softViolations: ReadonlyArray<ConstraintViolation>;
 }
 ```
 
-Restricciones duras invalidan la acción; soft penalizan el score. 12 códigos de restricción (`ConstraintCode`): clinical_safety, legal_regulatory, physical, professional_hours, professional_break, patient_preference, patient_tolerance, patient_availability, resource_availability, chaining, information_dependency, economic_dependency.
+12 códigos de restricción (`ConstraintCode`): clinical_safety, legal_regulatory, physical, professional_hours, professional_break, patient_preference, patient_tolerance, patient_availability, resource_availability, chaining, information_dependency, economic_dependency.
 
 ### 5.6 Simulación
 
@@ -222,7 +216,7 @@ export interface SimulationResult {
 }
 ```
 
-**Decisión Sesión 10 (master §10):** la implementación inicial del Simulator (C4) es **determinista**, usando p50 como valor esperado y varianza calculada analíticamente desde p10/p90 del Predictor. Monte Carlo con N muestras se difiere a sesión post-piloto cuando haya datos reales.
+**Decisión Sesión 10:** Simulator (C4) inicial determinista (p50 + varianza analítica desde p10/p90). Monte Carlo se difiere a post-piloto.
 
 ### 5.7 Decisión y explicación
 
@@ -243,9 +237,7 @@ export interface Explanation {
 }
 ```
 
-`AutonomyLevel`: `auto_executable | quick_suggestion | detailed_suggestion | notify_only` (4 niveles del modelo mental capa 9).
-
-`consideredAlternatives` está ordenado por `score` descendente (invariante I-14 en §12.2).
+`AutonomyLevel`: `auto_executable | quick_suggestion | detailed_suggestion | notify_only`. `consideredAlternatives` ordenado por `score` descendente.
 
 ### 5.8 Eventos — API de entrada al motor
 
@@ -266,13 +258,9 @@ export interface Explanation {
 | `proactive_tick` | `ProactiveTickEvent` |
 | `manual_signal` | `ManualSignalEvent` |
 
-Bus de eventos asíncrono recomendado entre SaaS y motor (cola persistente, escala independiente). Implementación concreta del bus se decide en Sesión 17.
-
 ---
 
-## 6. Componentes del motor (NUEVO en v2.0)
-
-Los 6 componentes del modelo mental, con sus tipos de entrada y salida.
+## 6. Componentes del motor
 
 ### C1 — Predictor
 
@@ -284,7 +272,7 @@ predictAdviceAcceptance(...)     → ScoreRatio
 updateInProgress(id, signals)    → DurationDistribution
 ```
 
-Implementación inicial (Sesión 12): distribuciones del catálogo maestro + reglas de fallback. ML (gradient boosting) se difiere a post-piloto.
+Implementación inicial (Sesión 12): distribuciones del catálogo maestro (`Procedure.referenceDuration*` y `ProcedureActivation.learnedDuration*`, añadidas en Sesión 11B) + reglas de fallback. ML diferido a post-piloto.
 
 ### C2 — Validator
 
@@ -293,7 +281,7 @@ validate(state, action)                → ValidationResult
 listCompatible(appointment, kind)      → ReadonlyArray<ResourceId>
 ```
 
-Implementación: motor de reglas tipadas que opera sobre los códigos `ConstraintCode`.
+Implementación: motor de reglas tipadas que opera sobre `ConstraintCode` (Sesión 13).
 
 ### C3 — Generator
 
@@ -301,7 +289,7 @@ Implementación: motor de reglas tipadas que opera sobre los códigos `Constrain
 generateCandidates(state, trigger, budgetMs) → ReadonlyArray<CompositeAction>
 ```
 
-Implementación: búsqueda local greedy con time-budget + anytime algorithm. Devuelve "no_op" siempre como candidata.
+Implementación: búsqueda local greedy con time-budget + anytime algorithm (Sesión 14). Devuelve "no_op" siempre como candidata.
 
 ### C4 — Simulator
 
@@ -309,7 +297,7 @@ Implementación: búsqueda local greedy con time-budget + anytime algorithm. Dev
 simulate(state, action) → SimulationResult
 ```
 
-Implementación inicial determinista (p50 + varianza analítica), Monte Carlo en versión post-piloto.
+Implementación inicial determinista (Sesión 15).
 
 ### C5 — Scorer
 
@@ -317,7 +305,7 @@ Implementación inicial determinista (p50 + varianza analítica), Monte Carlo en
 score(simulationResult, weights, changeCost) → number
 ```
 
-Combinación lineal ponderada + penalización por varianza + penalización por coste de cambio. La "personalidad" del motor para cada clínica vive aquí.
+Combinación lineal ponderada + penalización por varianza + penalización por coste de cambio (Sesión 16). La "personalidad" del motor para cada clínica vive aquí.
 
 ### C6 — Coordinator
 
@@ -325,9 +313,9 @@ Combinación lineal ponderada + penalización por varianza + penalización por c
 runCycle(event) → CycleDecision
 ```
 
-Único componente que conoce el flujo completo:
+Único componente que conoce el flujo completo (Sesión 17):
 
-1. Reconstruye `DayState`.
+1. Reconstruye `DayState` (consultando schema, aplicando filtros `clinicId`).
 2. Pide predicciones al Predictor.
 3. Pide candidatas al Generator.
 4. Para cada candidata: Validator → Simulator → Scorer.
@@ -368,15 +356,15 @@ runCycle(event) → CycleDecision
 | `EventoTickProactivo` | `ProactiveTickEvent` |
 | `EventoSeñalManual` | `ManualSignalEvent` |
 
-Decisión de nomenclatura: el código está en inglés porque el clean core es infra reutilizable inter-vertical e inter-mercado (ES → PT → DACH → LatAm). Los conceptos del modelo mental viven en castellano en el documento por razones de mercado inicial pero en el código se traducen para coherencia con el resto del repo (ya en inglés desde Sesión 9 v1.0).
+Decisión de nomenclatura: el código está en inglés porque el clean core es infra reutilizable inter-vertical e inter-mercado.
 
 ---
 
 ## 8. Discrepancias del v1.0 markdown vs implementación real (resueltas en v2.0)
 
-El contrato v1.0 en su forma markdown describía una API ligeramente distinta de la que terminó en `lib/core/types.ts` de Sesión 9 v1.0. Resolución: la implementación real es la fuente de verdad.
+El contrato v1.0 markdown describía una API ligeramente distinta de la que terminó en `lib/core/types.ts` de Sesión 9 v1.0. Resolución (mantenida en v2.1): la implementación real es la fuente de verdad.
 
-| Concepto | v1.0 markdown decía | Real (y v2.0) |
+| Concepto | v1.0 markdown decía | Real (y v2.1) |
 |---|---|---|
 | `Gap.sourceEventId` | sí | renombrado a `originEventId` |
 | `Gap.lostValue` | sí | eliminado (se deriva en capa dental) |
@@ -391,13 +379,11 @@ El contrato v1.0 en su forma markdown describía una API ligeramente distinta de
 | `ExplanationCode.PRIORITY_LOW` | sí | eliminado (no se usa) |
 | `ExplanationCode.VALUE_MEDIUM` | no | añadido (umbral medio) |
 
-Adicionalmente: la API real no diferencia "no hay gap" vs "hay gap sin candidato viable" en su output (ambos casos: `suggestions: []`). Si esa visibilidad se requiere para UX (mostrar "hay hueco pero no hay candidato"), se reintroduce en Sesión 18 al migrar callers.
-
 ---
 
 ## 9. Función principal del v1.0 — `decideFillForGap`
 
-Sin cambios respecto al v1.0. Sigue siendo la entrada del clean core v1.0 hasta que el Coordinator (C6) la reemplace en Sesión 17.
+Sin cambios respecto al v1.0/v2.0. Sigue siendo la entrada del clean core hasta que el Coordinator (C6) la reemplace en Sesión 17.
 
 ```typescript
 export function decideFillForGap(
@@ -432,6 +418,27 @@ Pura, sin IO, sin mutación.
 
 Dependencia estricta: `core/` no depende de nada. Adapters dependen del core. Dominios dependen del core. UI depende de dominios y i18n.
 
+### 11.5 Multi-tenant lógico (NUEVO en v2.1 — Sesión 11A)
+
+**El clean core sigue siendo agnóstico de tenant.** El aislamiento multi-tenant se aplica enteramente en la capa de adaptación, no dentro del motor. Materialización:
+
+1. **`lib/tenant.ts`** centraliza el tenant actual:
+   ```typescript
+   export function getCurrentClinicId(): number {
+     return 1;  // hasta Sesión 19.5 (auth real con JWT)
+   }
+   ```
+
+2. **Todos los `prisma.X.findMany/findFirst/create/update/delete`** filtran por `clinicId: getCurrentClinicId()` en `where` o lo incluyen en `data`. Esta regla es **obligatoria para todas las tablas tenant-aware** (Gabinete, Dentist, TreatmentType, Patient, Appointment, RuntimeState, DaySchedule, y las que vengan en Sesiones 11B-D: Equipment, ProcedureActivation, ConstraintRule, WaitlistEntry).
+
+3. **`Procedure` (catálogo maestro de Sesión 11B) NO lleva `clinicId`** — es referencia global mantenida por la empresa. Las clínicas se vinculan a procedimientos vía `ProcedureActivation` (que sí lleva `clinicId`).
+
+4. **El clean core puede consumir un `DayState` con `tenantId: string`** (definido en `types.ts §5.2`), pero no impone cómo se obtiene ese `tenantId`. La capa de adaptación lo rellena leyendo `getCurrentClinicId()`.
+
+5. **El Coordinator (C6, Sesión 17)** recibe el `tenantId` desde fuera y lo propaga al adapter al reconstruir `DayState`. **No lo deriva el motor** — eso violaría 2.2 (abstracción de dominio total).
+
+**Limitación reconocida (deuda RLS-MULTITENANT en master §4.2):** este aislamiento es lógico, no físico. Postgres no fuerza nada. Aceptable mientras hay un solo tenant. Antes del 2º cliente piloto (Sesión 19.5 o antes), activar Row-Level Security en Postgres + JWT con `clinicaId` claim. La firma de `getCurrentClinicId()` no cambia — solo su implementación.
+
 ---
 
 ## 12. Invariantes y tests
@@ -448,7 +455,7 @@ Dependencia estricta: `core/` no depende de nada. Adapters dependen del core. Do
 | I-6 | Estabilidad: orden de inputs no afecta ranking | `engine.test.ts` |
 | I-7 | Fidelidad numérica con v7.3 (Mónica T. = 0.98) | `engine.test.ts` |
 
-### 12.2 Invariantes nuevos en v2.0
+### 12.2 Invariantes del modelo mental (Sesión 10)
 
 | ID | Invariante | Test |
 |---|---|---|
@@ -456,46 +463,76 @@ Dependencia estricta: `core/` no depende de nada. Adapters dependen del core. Do
 | I-9 | `MinutesDistribution`: `stdDev >= 0`, `p10 <= p50 <= p90` (mean libre) | `types.test.ts` |
 | I-10 | `validateCompositionCoherence`: composición vacía es inválida | `types.test.ts` |
 | I-11 | `validateCompositionCoherence`: detecta duplicados y conflictos por `eventId` | `types.test.ts` |
-| I-12 | `KPIVector.risk` es derivado de varianza, no input directo del usuario | (verificado en Simulator C4 — Sesión 15) |
-| I-13 | `no_op` siempre presente como candidata en cada ciclo del Coordinator | (verificado en C6 — Sesión 17) |
+| I-12 | `KPIVector.risk` es derivado de varianza, no input directo | (verificado en Simulator C4 — Sesión 15) |
+| I-13 | `no_op` siempre presente como candidata en cada ciclo | (verificado en C6 — Sesión 17) |
 | I-14 | `Explanation.consideredAlternatives` ordenado por `score` DESC | `types.test.ts` |
 | I-15 | `CompositeAction` con `no_op` no coexiste con otras primitivas | `types.test.ts` |
+
+### 12.3 Invariantes de multi-tenant (Sesión 11A)
+
+| ID | Invariante | Test |
+|---|---|---|
+| I-16 | Toda query Prisma sobre tabla tenant-aware filtra por `clinicId` | (revisión manual + futuro lint) |
+| I-17 | Todo `prisma.X.create` sobre tabla tenant-aware incluye `clinicId` en `data` | (revisión manual + futuro lint) |
+| I-18 | `getCurrentClinicId()` es la única fuente del tenant actual | (convención del codebase) |
+
+I-16/17/18 no tienen test automático todavía. Se cubrirán con un lint custom o con RLS Postgres en Sesión 19.5.
 
 ---
 
 ## 13. Path migratorio
 
-### Sesión 10 (cerrando) — Tipos del modelo mental + contrato v2.0
+### Sesión 10 — Tipos del modelo mental + contrato v2.0 ✅ CERRADA
 
-1. Ampliar `lib/core/types.ts` con tipos del modelo mental.
-2. Crear `lib/core/types.test.ts` con invariantes I-8 a I-15.
-3. Reescribir `docs/core-contract.md` como v2.0.
-4. Realinear `lib/core/engine.ts`, `lib/core/engine.test.ts`, `lib/adapters/prisma.ts`, `lib/domains/dental.ts` con la API real (deuda de Sesión 9 v1.0 detectada con primer `tsc --noEmit`).
+1. ✅ `lib/core/types.ts` ampliado con tipos del modelo mental.
+2. ✅ `lib/core/types.test.ts` con invariantes I-8 a I-15 (22 tests).
+3. ✅ `docs/core-contract.md` v2.0.
+4. ✅ Realineado `lib/core/engine.ts`, `lib/core/engine.test.ts`, `lib/core/primitives.ts`, `lib/core/config.ts`, `lib/adapters/prisma.ts`, `lib/domains/dental.ts` con la API real (deuda Sesión 9 v1.0).
 
-### Sesión 11 — Schema ampliado
+### Sesión 11A — Multi-tenant lógico ✅ CERRADA
 
-Catálogo maestro versionado, vectores de capacidades, restricciones como entidades de primera clase, scores predictivos por paciente, equipamiento con modalidad fijo/itinerante.
+1. ✅ `ClinicSettings` extendido con `zonaHoraria`, `pesosKpi`, `politicaAutonomia`, `umbralDisparoProactivo`.
+2. ✅ `clinicId` (nullable) añadido a Gabinete, Dentist, TreatmentType, Patient, Appointment, RuntimeState.
+3. ✅ Migración `20260428150140_extend_clinicsettings_add_clinicid` aplicada.
+4. ✅ Backfill `clinicId=1` en 31 filas existentes vía `scripts/backfill-clinicid.ts`.
+5. ✅ `lib/tenant.ts` con `getCurrentClinicId()`.
+6. ✅ 12 archivos (4 API routes, 5 actions.ts, 6 page.tsx, seed.ts) refactorizados con `clinicId`.
+7. ✅ Contrato bumpeado a v2.1 con §11.5.
+
+### Sesión 11B (siguiente) — Catálogo maestro
+
+Tablas nuevas: `Procedure` (global), `Equipment` (por clínica), `ProcedureActivation` (clínica × procedimiento), `EquipmentRoom` (m-n).
+
+### Sesiones 11C-11D — Extensiones del schema
+
+11C: extender Dentist/Gabinete con vectores de capacidades + Patient con scores predictivos.
+11D: Appointment runtime extendido + ConstraintRule + WaitlistEntry separado.
 
 ### Sesiones 12-17 — Componentes C1 a C6
 
-Un componente por sesión. Cada componente respeta su contrato (§6) y puede sustituirse sin tocar los demás.
+Un componente por sesión. Cada uno respeta su contrato (§6).
 
 ### Sesión 18 — Migración masiva de callers
 
-`route.ts`, `OrbitalPanel.tsx`, `AgendaGrid.tsx` consumen los nuevos tipos directamente. La capa dental ya no traduce nombres heredados (`recoveredGapsCount` → `recoveredGaps` en la UI).
+`route.ts`, `OrbitalPanel.tsx`, `AgendaGrid.tsx` consumen los nuevos tipos directamente. Capa dental ya no traduce nombres heredados.
 
 ### Sesión 19 — Borrado del legacy
 
 `lib/orbital-engine.ts` se borra. Solo el clean core ejecuta lógica.
 
+### Sesión 19.5 — RLS Postgres + auth real
+
+Cierra deuda **RLS-MULTITENANT**. `getCurrentClinicId()` lee del JWT en lugar de devolver `1`.
+
 ---
 
 ## 14. Evolución prevista
 
-- **Multi-gap óptimo**: cambiar `gapDetection` a `all_cancelled` + algoritmo de matching (p.ej. húngaro). La estructura `EngineResult.suggestions[]` ya lo permite.
-- **Huecos naturales** (Fase 2): `gapType: "natural"` reintroducido si hace falta diferenciar de cancelados.
+- **Multi-gap óptimo**: cambiar `gapDetection` a `all_cancelled` + matching húngaro. La estructura `EngineResult.suggestions[]` ya lo permite.
+- **Huecos naturales** (Fase 2): `gapType: "natural"` reintroducido si hace falta.
 - **ML del Predictor**: sustituye distribuciones del catálogo por modelos entrenados con datos de pilotos. No cambia el contrato del C1.
-- **Monte Carlo en Simulator**: sustituye determinismo p50 + varianza analítica. No cambia el contrato del C4.
+- **Monte Carlo en Simulator**: sustituye determinismo. No cambia el contrato del C4.
 - **Restricciones contextuales avanzadas**: añadir códigos a `ConstraintCode`. Cambio aditivo.
+- **Multi-tenant físico** (DB por clínica para tier enterprise): cambio en `lib/prisma.ts` para resolver conexión por tenant. Clean core sigue intacto.
 
 Si alguna evolución futura no encaja en este contrato, se documenta como bump de versión (2.x → 3.0) con entrada en §10 del master.
