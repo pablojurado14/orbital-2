@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 import { HOURS } from "@/data/mock";
 
@@ -54,6 +55,7 @@ function parseDate(yyyymmdd: string): Date | null {
 
 export async function POST(request: NextRequest) {
   try {
+    const clinicId = getCurrentClinicId();
     const body = await request.json();
 
     const patientId = Number(body?.patientId);
@@ -88,12 +90,12 @@ export async function POST(request: NextRequest) {
     }
 
     const [patient, dentist, gabinete, treatment, schedule] = await Promise.all([
-      prisma.patient.findUnique({ where: { id: patientId } }),
-      prisma.dentist.findUnique({ where: { id: dentistId } }),
-      prisma.gabinete.findUnique({ where: { id: gabineteId } }),
-      prisma.treatmentType.findUnique({ where: { id: treatmentTypeId } }),
+      prisma.patient.findFirst({ where: { id: patientId, clinicId } }),
+      prisma.dentist.findFirst({ where: { id: dentistId, clinicId } }),
+      prisma.gabinete.findFirst({ where: { id: gabineteId, clinicId } }),
+      prisma.treatmentType.findFirst({ where: { id: treatmentTypeId, clinicId } }),
       prisma.daySchedule.findUnique({
-        where: { clinicId_dayOfWeek: { clinicId: 1, dayOfWeek: date.getDay() } },
+        where: { clinicId_dayOfWeek: { clinicId, dayOfWeek: date.getDay() } },
       }),
     ]);
 
@@ -127,9 +129,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Solapamiento en mismo gabinete y fecha (ignorando canceladas)
     const sameDayInGabinete = await prisma.appointment.findMany({
       where: {
+        clinicId,
         gabineteId,
         date,
         status: { not: "cancelled" },
@@ -158,6 +160,7 @@ export async function POST(request: NextRequest) {
 
     const created = await prisma.appointment.create({
       data: {
+        clinicId,
         date,
         startTime,
         duration,

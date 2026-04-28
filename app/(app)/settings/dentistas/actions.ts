@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
 export async function saveDentist(data: {
@@ -10,21 +11,27 @@ export async function saveDentist(data: {
   active: boolean;
 }) {
   try {
+    const clinicId = getCurrentClinicId();
+
     if (data.id) {
-      await prisma.dentist.update({
-        where: { id: data.id },
+      const result = await prisma.dentist.updateMany({
+        where: { id: data.id, clinicId },
         data: {
           name: data.name,
           specialty: data.specialty || null,
           active: data.active,
         },
       });
+      if (result.count === 0) {
+        return { success: false, error: "Dentista no encontrado." };
+      }
     } else {
       await prisma.dentist.create({
         data: {
           name: data.name,
           specialty: data.specialty || null,
           active: data.active,
+          clinicId,
         },
       });
     }
@@ -45,13 +52,26 @@ export async function saveDentist(data: {
 
 export async function deleteDentist(id: number) {
   try {
-    const hasAppointments = await prisma.appointment.findFirst({ where: { dentistId: id } });
+    const clinicId = getCurrentClinicId();
+
+    const hasAppointments = await prisma.appointment.findFirst({
+      where: { dentistId: id, clinicId },
+    });
     if (hasAppointments) {
-      await prisma.dentist.update({ where: { id }, data: { active: false } });
+      const r = await prisma.dentist.updateMany({
+        where: { id, clinicId },
+        data: { active: false },
+      });
+      if (r.count === 0) {
+        return { success: false, error: "Dentista no encontrado." };
+      }
       revalidatePath("/settings/dentistas");
       return { success: true, message: "Dentista desactivado por tener histórico de citas." };
     }
-    await prisma.dentist.delete({ where: { id } });
+    const r = await prisma.dentist.deleteMany({ where: { id, clinicId } });
+    if (r.count === 0) {
+      return { success: false, error: "Dentista no encontrado." };
+    }
     revalidatePath("/settings/dentistas");
     return { success: true };
   } catch (error) {

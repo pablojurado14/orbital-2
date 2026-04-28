@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
 export async function saveHorario(data: {
@@ -12,8 +13,10 @@ export async function saveHorario(data: {
   afternoonClose: string | null;
 }) {
   try {
-    await prisma.daySchedule.update({
-      where: { id: data.id },
+    const clinicId = getCurrentClinicId();
+
+    const result = await prisma.daySchedule.updateMany({
+      where: { id: data.id, clinicId },
       data: {
         isOpen: data.isOpen,
         morningOpen: data.isOpen ? data.morningOpen : null,
@@ -22,6 +25,9 @@ export async function saveHorario(data: {
         afternoonClose: data.isOpen ? data.afternoonClose : null,
       },
     });
+    if (result.count === 0) {
+      return { success: false, error: "Horario no encontrado." };
+    }
     revalidatePath("/settings/horarios");
     return { success: true };
   } catch (error) {

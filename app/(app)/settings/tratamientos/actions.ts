@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
 export async function saveTratamiento(data: {
@@ -11,9 +12,11 @@ export async function saveTratamiento(data: {
   active: boolean;
 }) {
   try {
+    const clinicId = getCurrentClinicId();
+
     if (data.id) {
-      await prisma.treatmentType.update({
-        where: { id: data.id },
+      const result = await prisma.treatmentType.updateMany({
+        where: { id: data.id, clinicId },
         data: {
           name: data.name,
           duration: data.duration,
@@ -21,6 +24,9 @@ export async function saveTratamiento(data: {
           active: data.active,
         },
       });
+      if (result.count === 0) {
+        return { success: false, error: "Tratamiento no encontrado." };
+      }
     } else {
       await prisma.treatmentType.create({
         data: {
@@ -28,6 +34,7 @@ export async function saveTratamiento(data: {
           duration: data.duration,
           price: data.price,
           active: data.active,
+          clinicId,
         },
       });
     }
@@ -45,11 +52,23 @@ export async function saveTratamiento(data: {
 
 export async function deleteTratamiento(id: number) {
   try {
-    const hasAppointments = await prisma.appointment.findFirst({ where: { treatmentTypeId: id } });
-    const hasWaiting = await prisma.patient.findFirst({ where: { waitingTreatmentId: id } });
+    const clinicId = getCurrentClinicId();
+
+    const hasAppointments = await prisma.appointment.findFirst({
+      where: { treatmentTypeId: id, clinicId },
+    });
+    const hasWaiting = await prisma.patient.findFirst({
+      where: { waitingTreatmentId: id, clinicId },
+    });
 
     if (hasAppointments || hasWaiting) {
-      await prisma.treatmentType.update({ where: { id }, data: { active: false } });
+      const r = await prisma.treatmentType.updateMany({
+        where: { id, clinicId },
+        data: { active: false },
+      });
+      if (r.count === 0) {
+        return { success: false, error: "Tratamiento no encontrado." };
+      }
       revalidatePath("/settings/tratamientos");
       return {
         success: true,
@@ -57,7 +76,10 @@ export async function deleteTratamiento(id: number) {
       };
     }
 
-    await prisma.treatmentType.delete({ where: { id } });
+    const r = await prisma.treatmentType.deleteMany({ where: { id, clinicId } });
+    if (r.count === 0) {
+      return { success: false, error: "Tratamiento no encontrado." };
+    }
     revalidatePath("/settings/tratamientos");
     return { success: true };
   } catch (error) {

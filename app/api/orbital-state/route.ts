@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { seedDemoData } from "@/lib/seed";
+import { getCurrentClinicId } from "@/lib/tenant";
+import { seed } from "@/lib/seed";
 import {
   buildOrbitalState,
   SuggestionDecision,
@@ -23,29 +24,29 @@ type AppointmentView = {
 };
 
 async function ensureSeeded() {
-  const clinic = await prisma.clinicSettings.findUnique({ where: { id: 1 } });
+  const clinicId = getCurrentClinicId();
+  const clinic = await prisma.clinicSettings.findUnique({ where: { id: clinicId } });
 
   if (!clinic) {
-    await seedDemoData();
+    await seed();
   }
 
   await prisma.runtimeState.upsert({
-    where: { id: 1 },
+    where: { id: clinicId },
     update: {},
-    create: { id: 1, suggestionDecision: "pending" },
+    create: { id: clinicId, suggestionDecision: "pending", clinicId },
   });
 }
 
 // PROD-1-DEUDA2 + TZ-MADRID-VERCEL — calcula los límites del día actual en
 // zona Europe/Madrid, independientemente del TZ del runtime (Vercel = UTC).
-// Mitigación hasta que INTL-3 cierre en Sesión 9 con UTC interno + conversión
-// a TZ del tenant en presentación según core-contract.md §2.6.
+// Mitigación hasta que INTL-3 cierre operativo en Sesión 18.
 function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const now = new Date();
 
   const dateStringMadrid = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
-  }).format(now); // "2026-04-28"
+  }).format(now);
 
   const offsetParts = new Intl.DateTimeFormat("en", {
     timeZone: "Europe/Madrid",
@@ -62,12 +63,14 @@ function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
 }
 
 async function loadStateData() {
+  const clinicId = getCurrentClinicId();
   const { today, tomorrow } = getMadridDayBoundaries();
 
   const [appointmentsRaw, waitingPatientsRaw, gabinetesRaw, runtime] =
     await Promise.all([
       prisma.appointment.findMany({
         where: {
+          clinicId,
           date: {
             gte: today,
             lt: tomorrow,
@@ -82,15 +85,15 @@ async function loadStateData() {
         orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
       }),
       prisma.patient.findMany({
-        where: { inWaitingList: true },
+        where: { clinicId, inWaitingList: true },
         include: { waitingTreatment: true, preferredGabinete: true },
         orderBy: { id: "asc" },
       }),
       prisma.gabinete.findMany({
-        where: { active: true },
+        where: { clinicId, active: true },
         orderBy: { name: "asc" },
       }),
-      prisma.runtimeState.findUnique({ where: { id: 1 } }),
+      prisma.runtimeState.findUnique({ where: { id: clinicId } }),
     ]);
 
   const appointments: AppointmentView[] = appointmentsRaw.map((a) => ({
@@ -124,11 +127,6 @@ async function loadStateData() {
   const gabinetes = gabinetesRaw.map((g) => g.name);
   const decision = (runtime?.suggestionDecision ?? "pending") as SuggestionDecision;
 
-  // PROD-1-DEUDA — capacidad real = gabinetes activos × franjas operativas (30 min).
-  // HOURS contiene celdillas visuales de 15 min; durationSlots del numerador
-  // está en slots operativos de 30 min. Dividimos HOURS.length entre 2 para
-  // alinear unidades. Cuando GRANULARITY-15MIN se cierre en Sesión 9, esto
-  // pasa a ser un cálculo coherente sin división mental.
   const totalAvailableSlots = gabinetesRaw.length * Math.floor(HOURS.length / 2);
 
   return {
@@ -165,15 +163,16 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   await ensureSeeded();
+  const clinicId = getCurrentClinicId();
 
   const body = await request.json();
   const action = body?.action as SuggestionDecision | "reset";
 
   if (action === "reset") {
     await prisma.runtimeState.upsert({
-      where: { id: 1 },
+      where: { id: clinicId },
       update: { suggestionDecision: "pending" },
-      create: { id: 1, suggestionDecision: "pending" },
+      create: { id: clinicId, suggestionDecision: "pending", clinicId },
     });
   } else if (
     action === "accepted" ||
@@ -181,9 +180,9 @@ export async function POST(request: NextRequest) {
     action === "pending"
   ) {
     await prisma.runtimeState.upsert({
-      where: { id: 1 },
+      where: { id: clinicId },
       update: { suggestionDecision: action },
-      create: { id: 1, suggestionDecision: action },
+      create: { id: clinicId, suggestionDecision: action, clinicId },
     });
   } else {
     return NextResponse.json({ error: "Acción no válida" }, { status: 400 });

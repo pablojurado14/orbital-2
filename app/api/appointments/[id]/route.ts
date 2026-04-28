@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 import { HOURS } from "@/data/mock";
 
@@ -57,13 +58,14 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const clinicId = getCurrentClinicId();
     const { id: idStr } = await context.params;
     const id = Number(idStr);
     if (!id || Number.isNaN(id)) {
       return NextResponse.json({ error: "ID de cita inválido" }, { status: 400 });
     }
 
-    const existing = await prisma.appointment.findUnique({ where: { id } });
+    const existing = await prisma.appointment.findFirst({ where: { id, clinicId } });
     if (!existing) {
       return NextResponse.json({ error: "Cita no encontrada" }, { status: 404 });
     }
@@ -76,7 +78,6 @@ export async function PATCH(
 
     const body = await request.json();
 
-    // Subset: cualquier campo no provisto se rellena con el valor actual
     const newStartTime =
       typeof body?.startTime === "string" ? body.startTime : existing.startTime;
     const newDuration =
@@ -109,11 +110,11 @@ export async function PATCH(
     }
 
     const [gabinete, dentist, treatment, schedule] = await Promise.all([
-      prisma.gabinete.findUnique({ where: { id: newGabineteId } }),
-      prisma.dentist.findUnique({ where: { id: newDentistId } }),
-      prisma.treatmentType.findUnique({ where: { id: newTreatmentTypeId } }),
+      prisma.gabinete.findFirst({ where: { id: newGabineteId, clinicId } }),
+      prisma.dentist.findFirst({ where: { id: newDentistId, clinicId } }),
+      prisma.treatmentType.findFirst({ where: { id: newTreatmentTypeId, clinicId } }),
       prisma.daySchedule.findUnique({
-        where: { clinicId_dayOfWeek: { clinicId: 1, dayOfWeek: newDate.getDay() } },
+        where: { clinicId_dayOfWeek: { clinicId, dayOfWeek: newDate.getDay() } },
       }),
     ]);
     if (!gabinete || !gabinete.active) {
@@ -143,9 +144,9 @@ export async function PATCH(
       );
     }
 
-    // Solapamiento, excluyendo la propia cita
     const conflicts = await prisma.appointment.findMany({
       where: {
+        clinicId,
         gabineteId: newGabineteId,
         date: newDate,
         status: { not: "cancelled" },

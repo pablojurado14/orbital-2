@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
 type SaveResult = { success: true } | { success: false; error: string };
@@ -20,6 +21,8 @@ export async function savePatient(data: {
   easeScore?: number;
 }): Promise<SaveResult> {
   try {
+    const clinicId = getCurrentClinicId();
+
     const waitingFields = data.inWaitingList
       ? {
           waitingTreatmentId: data.waitingTreatmentId ?? null,
@@ -48,13 +51,16 @@ export async function savePatient(data: {
     };
 
     if (data.id) {
-      await prisma.patient.update({
-        where: { id: data.id },
+      const result = await prisma.patient.updateMany({
+        where: { id: data.id, clinicId },
         data: persisted,
       });
+      if (result.count === 0) {
+        return { success: false, error: "Paciente no encontrado o no pertenece a esta clínica." };
+      }
     } else {
       await prisma.patient.create({
-        data: persisted,
+        data: { ...persisted, clinicId },
       });
     }
 

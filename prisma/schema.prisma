@@ -7,11 +7,21 @@ datasource db {
 }
 
 model ClinicSettings {
-  id        Int           @id @default(1)
-  name      String        @default("Mi Clínica Dental")
-  schedules DaySchedule[]
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id                     Int             @id @default(1)
+  name                   String          @default("Mi Clínica Dental")
+  zonaHoraria            String          @default("Europe/Madrid")
+  pesosKpi               Json?
+  politicaAutonomia      Json?
+  umbralDisparoProactivo Float?
+  schedules              DaySchedule[]
+  gabinetes              Gabinete[]
+  dentists               Dentist[]
+  treatmentTypes         TreatmentType[]
+  patients               Patient[]
+  appointments           Appointment[]
+  runtimeStates          RuntimeState[]
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 }
 
 model DaySchedule {
@@ -24,83 +34,111 @@ model DaySchedule {
   afternoonClose String?
   clinicId       Int
   clinic         ClinicSettings @relation(fields: [clinicId], references: [id])
+
   @@unique([clinicId, dayOfWeek])
 }
 
 model Gabinete {
-  id           Int           @id @default(autoincrement())
-  name         String        @unique
+  id           Int             @id @default(autoincrement())
+  name         String          @unique
   description  String?
-  active       Boolean       @default(true)
+  active       Boolean         @default(true)
+  clinicId     Int?
+  clinic       ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments Appointment[]
-  preferredBy  Patient[]     @relation("PatientPreferredGabinete")
+  preferredBy  Patient[]       @relation("PatientPreferredGabinete")
+
+  @@index([clinicId])
 }
 
 model Dentist {
-  id           Int           @id @default(autoincrement())
+  id           Int             @id @default(autoincrement())
   name         String
   specialty    String?
-  active       Boolean       @default(true)
+  active       Boolean         @default(true)
+  clinicId     Int?
+  clinic       ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments Appointment[]
-  preferredBy  Patient[]     @relation("PatientPreferredDentist")
+  preferredBy  Patient[]       @relation("PatientPreferredDentist")
+
+  @@index([clinicId])
 }
 
 model TreatmentType {
-  id              Int           @id @default(autoincrement())
-  name            String        @unique
+  id              Int             @id @default(autoincrement())
+  name            String          @unique
   duration        Int
   price           Float?
-  currency        String        @default("EUR")
-  active          Boolean       @default(true)
+  currency        String          @default("EUR")
+  active          Boolean         @default(true)
+  clinicId        Int?
+  clinic          ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments    Appointment[]
-  waitingPatients Patient[]     @relation("PatientWaitingTreatment")
+  waitingPatients Patient[]       @relation("PatientWaitingTreatment")
+
+  @@index([clinicId])
 }
 
 model Patient {
-  id                   Int           @id @default(autoincrement())
+  id                   Int             @id @default(autoincrement())
   name                 String
   phone                String?
   email                String?
   notes                String?
-  createdAt            DateTime      @default(now())
-  inWaitingList        Boolean       @default(false)
+  createdAt            DateTime        @default(now())
+  inWaitingList        Boolean         @default(false)
   waitingTreatmentId   Int?
   waitingDurationSlots Int?
   waitingValue         Float?
-  waitingCurrency      String        @default("EUR")
-  priority             Int           @default(1)
-  availableNow         Boolean       @default(true)
-  easeScore            Int           @default(5)
+  waitingCurrency      String          @default("EUR")
+  priority             Int             @default(1)
+  availableNow         Boolean         @default(true)
+  easeScore            Int             @default(5)
   preferredGabineteId  Int?
   preferredDentistId   Int?
-  preferredGabinete    Gabinete?      @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
-  preferredDentist     Dentist?       @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
-  waitingTreatment     TreatmentType? @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
+  clinicId             Int?
+  clinic               ClinicSettings? @relation(fields: [clinicId], references: [id])
+  preferredGabinete    Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
+  preferredDentist     Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
+  waitingTreatment     TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
   appointments         Appointment[]
+
+  @@index([clinicId])
 }
 
 model Appointment {
-  id              Int           @id @default(autoincrement())
+  id              Int             @id @default(autoincrement())
   startTime       String
   date            DateTime
   duration        Int
-  status          String        @default("scheduled")
+  status          String          @default("scheduled")
   value           Float?
-  currency        String        @default("EUR")
+  currency        String          @default("EUR")
   notes           String?
   patientId       Int
-  patient         Patient       @relation(fields: [patientId], references: [id])
+  patient         Patient         @relation(fields: [patientId], references: [id])
   dentistId       Int
-  dentist         Dentist       @relation(fields: [dentistId], references: [id])
+  dentist         Dentist         @relation(fields: [dentistId], references: [id])
   gabineteId      Int
-  gabinete        Gabinete      @relation(fields: [gabineteId], references: [id])
+  gabinete        Gabinete        @relation(fields: [gabineteId], references: [id])
   treatmentTypeId Int
-  treatmentType   TreatmentType @relation(fields: [treatmentTypeId], references: [id])
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  treatmentType   TreatmentType   @relation(fields: [treatmentTypeId], references: [id])
+  clinicId        Int?
+  clinic          ClinicSettings? @relation(fields: [clinicId], references: [id])
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([clinicId, date])
+  @@index([date])
+  @@index([gabineteId, date])
+  @@index([patientId])
 }
 
 model RuntimeState {
-  id                 Int    @id
-  suggestionDecision String @default("pending")
+  id                 Int             @id
+  suggestionDecision String          @default("pending")
+  clinicId           Int?
+  clinic             ClinicSettings? @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
 }

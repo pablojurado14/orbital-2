@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
 export async function POST(request: NextRequest) {
   try {
+    const clinicId = getCurrentClinicId();
     const body = await request.json();
     const appointmentId = Number(body?.appointmentId);
 
@@ -14,8 +16,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const existingAppointment = await prisma.appointment.findUnique({
-      where: { id: appointmentId },
+    const existingAppointment = await prisma.appointment.findFirst({
+      where: { id: appointmentId, clinicId },
     });
 
     if (!existingAppointment) {
