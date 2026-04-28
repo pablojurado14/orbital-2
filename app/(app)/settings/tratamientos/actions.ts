@@ -7,7 +7,6 @@ export async function saveTratamiento(data: {
   id?: number;
   name: string;
   duration: number;
-  color: string;
   price: number | null;
   active: boolean;
 }) {
@@ -18,7 +17,6 @@ export async function saveTratamiento(data: {
         data: {
           name: data.name,
           duration: data.duration,
-          color: data.color,
           price: data.price,
           active: data.active,
         },
@@ -28,7 +26,6 @@ export async function saveTratamiento(data: {
         data: {
           name: data.name,
           duration: data.duration,
-          color: data.color,
           price: data.price,
           active: data.active,
         },
@@ -37,8 +34,12 @@ export async function saveTratamiento(data: {
     revalidatePath("/settings/tratamientos");
     return { success: true };
   } catch (error) {
+    const err = error as { code?: string; meta?: { target?: string[] | string } };
+    if (err?.code === "P2002") {
+      return { success: false, error: `Ya existe un tratamiento con ese nombre.` };
+    }
     console.error("Error saving tratamiento:", error);
-    return { success: false, error: "No se pudo guardar. El nombre puede estar duplicado." };
+    return { success: false, error: "No se pudo guardar el tratamiento." };
   }
 }
 

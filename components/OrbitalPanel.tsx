@@ -73,8 +73,6 @@ type Props = {
   rankedCandidates: RankedCandidate[];
   events: OrbitalEvent[];
   recommendationReason: string;
-  recoveredRevenue: number;
-  recoveredGaps: number;
   decision: SuggestionDecision;
   onStateChange: (nextState: OrbitalStateResponse) => void;
 };
@@ -84,8 +82,6 @@ export default function OrbitalPanel({
   rankedCandidates,
   events,
   recommendationReason,
-  recoveredRevenue,
-  recoveredGaps,
   decision,
   onStateChange,
 }: Props) {
@@ -263,14 +259,13 @@ export default function OrbitalPanel({
                 lineHeight: 1.6,
               }}
             >
-              No hay una sugerencia activa ahora mismo. El motor sigue monitorizando la agenda.
+              No hay sugerencia activa. El motor seguirá monitorizando la agenda.
             </div>
           ) : null}
 
           {!hasSuggestion && !isPending ? (
             <>
               {renderDecisionBanner()}
-
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 {renderReopenButton()}
               </div>
@@ -510,25 +505,6 @@ export default function OrbitalPanel({
               );
             })
           )}
-        </div>
-      </div>
-
-      <div
-        style={{
-          background: "#0F2744",
-          borderRadius: 18,
-          padding: 20,
-          color: "white",
-        }}
-      >
-        <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 8 }}>
-          Impacto recuperado
-        </div>
-        <div style={{ fontSize: 28, fontWeight: 800, color: "#00C2C7", marginBottom: 6 }}>
-          €{recoveredRevenue}
-        </div>
-        <div style={{ fontSize: 13, color: "#D7E0EA" }}>
-          Huecos recuperados: <strong>{recoveredGaps}</strong>
         </div>
       </div>
     </div>

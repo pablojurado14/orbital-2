@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getStatusLabel } from "@/lib/orbital-engine";
+import { HOURS } from "@/data/mock";
 
 type AppointmentStatus =
   | "confirmed"
@@ -24,17 +25,42 @@ type Appointment = {
 type Props = {
   appointment: Appointment;
   onClose: () => void;
+  editableMode?: boolean;
+  gabinetesForMove?: { id: number; name: string }[];
 };
 
-export default function AppointmentDetailModal({ appointment, onClose }: Props) {
+export default function AppointmentDetailModal({
+  appointment,
+  onClose,
+  editableMode = false,
+  gabinetesForMove,
+}: Props) {
   const router = useRouter();
   const [cancelling, setCancelling] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const canCancel =
     appointment.id !== undefined &&
     appointment.status !== "cancelled" &&
     appointment.status !== "suggested";
+
+  const canMove =
+    editableMode &&
+    appointment.id !== undefined &&
+    appointment.status !== "cancelled" &&
+    appointment.status !== "suggested" &&
+    !!gabinetesForMove &&
+    gabinetesForMove.length > 0;
+
+  const initialGabineteId = useMemo(() => {
+    if (!gabinetesForMove) return "";
+    const found = gabinetesForMove.find((g) => g.name === appointment.gabinete);
+    return found ? String(found.id) : "";
+  }, [gabinetesForMove, appointment.gabinete]);
+
+  const [moveGabineteId, setMoveGabineteId] = useState<string>(initialGabineteId);
+  const [moveStartTime, setMoveStartTime] = useState<string>(appointment.start);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -64,7 +90,6 @@ export default function AppointmentDetailModal({ appointment, onClose }: Props) 
           // Cuerpo sin JSON válido — mantener mensaje genérico
         }
 
-        // 400 benigno: la cita ya estaba cancelada (race condition). Éxito silencioso.
         if (response.status === 400 && errorMessage.includes("ya está cancelada")) {
           router.refresh();
           onClose();
@@ -83,6 +108,57 @@ export default function AppointmentDetailModal({ appointment, onClose }: Props) 
       setCancelling(false);
     }
   }
+
+  async function handleMove() {
+    if (appointment.id === undefined) return;
+    if (!moveGabineteId) {
+      setError("Selecciona un gabinete destino");
+      return;
+    }
+    setError(null);
+    setMoving(true);
+    try {
+      // Asumimos "hoy" porque /citas Fase 1 solo muestra el día actual.
+      // Cuando haya navegación de días, esta fecha se pasa por prop al modal.
+      const today = new Date();
+      const yyyy = today.getFullYear();
+      const mm = String(today.getMonth() + 1).padStart(2, "0");
+      const dd = String(today.getDate()).padStart(2, "0");
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+
+      const response = await fetch(`/api/appointments/${appointment.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date: dateStr,
+          startTime: moveStartTime,
+          gabineteId: Number(moveGabineteId),
+        }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "No se pudo mover la cita";
+        try {
+          const body = (await response.json()) as { error?: string };
+          if (body?.error) errorMessage = body.error;
+        } catch {
+          // sin JSON
+        }
+        throw new Error(errorMessage);
+      }
+
+      router.refresh();
+      onClose();
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Error desconocido");
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  const isMoveChanged =
+    moveGabineteId !== initialGabineteId || moveStartTime !== appointment.start;
 
   return (
     <div
@@ -135,6 +211,56 @@ export default function AppointmentDetailModal({ appointment, onClose }: Props) 
             <span className="font-semibold text-slate-900">€{appointment.value}</span>
           </div>
         </div>
+
+        {canMove ? (
+          <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+              Mover cita
+            </h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
+                  Gabinete
+                </label>
+                <select
+                  value={moveGabineteId}
+                  onChange={(e) => setMoveGabineteId(e.target.value)}
+                  className="w-full p-2 border rounded text-sm bg-white"
+                >
+                  {gabinetesForMove!.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
+                  Hora
+                </label>
+                <select
+                  value={moveStartTime}
+                  onChange={(e) => setMoveStartTime(e.target.value)}
+                  className="w-full p-2 border rounded text-sm bg-white"
+                >
+                  {HOURS.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleMove()}
+              disabled={moving || !isMoveChanged}
+              className="mt-3 w-full rounded-md bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {moving ? "Moviendo..." : isMoveChanged ? "Mover cita" : "Sin cambios"}
+            </button>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="mx-5 mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

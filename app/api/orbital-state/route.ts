@@ -5,13 +5,11 @@ import {
   buildOrbitalState,
   SuggestionDecision,
 } from "@/lib/orbital-engine";
-import { AppointmentStatus, WaitingPatient } from "@/data/mock";
+import { AppointmentStatus, WaitingPatient, HOURS } from "@/data/mock";
 import {
   countTodayAppointments,
   calculateOccupancy,
 } from "@/lib/dashboard-metrics";
-
-const TOTAL_AVAILABLE_SLOTS = 9;
 
 type AppointmentView = {
   id: number;
@@ -39,9 +37,21 @@ async function ensureSeeded() {
 }
 
 async function loadStateData() {
+  // PROD-1-DEUDA2 — filtro por el día de hoy (TZ servidor; INTL-3 cierra Sesión 9).
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
   const [appointmentsRaw, waitingPatientsRaw, gabinetesRaw, runtime] =
     await Promise.all([
       prisma.appointment.findMany({
+        where: {
+          date: {
+            gte: today,
+            lt: tomorrow,
+          },
+        },
         include: {
           gabinete: true,
           patient: true,
@@ -93,20 +103,38 @@ async function loadStateData() {
   const gabinetes = gabinetesRaw.map((g) => g.name);
   const decision = (runtime?.suggestionDecision ?? "pending") as SuggestionDecision;
 
-  return { appointments, waitingList, gabinetes, decision };
+  // PROD-1-DEUDA — capacidad real = gabinetes activos × franjas operativas (30 min).
+  // HOURS contiene celdillas visuales de 15 min; durationSlots del numerador
+  // está en slots operativos de 30 min. Dividimos HOURS.length entre 2 para
+  // alinear unidades. Cuando GRANULARITY-15MIN se cierre en Sesión 9, esto
+  // pasa a ser un cálculo coherente sin división mental.
+  const totalAvailableSlots = gabinetesRaw.length * Math.floor(HOURS.length / 2);
+
+  return {
+    appointments,
+    waitingList,
+    gabinetes,
+    decision,
+    totalAvailableSlots,
+  };
 }
 
 export async function GET() {
   await ensureSeeded();
 
-  const { appointments, waitingList, gabinetes, decision } =
-    await loadStateData();
+  const {
+    appointments,
+    waitingList,
+    gabinetes,
+    decision,
+    totalAvailableSlots,
+  } = await loadStateData();
 
   const state = buildOrbitalState(appointments, waitingList, decision);
 
   const metrics = {
     appointmentsCount: countTodayAppointments(appointments),
-    occupancy: calculateOccupancy(appointments, TOTAL_AVAILABLE_SLOTS),
+    occupancy: calculateOccupancy(appointments, totalAvailableSlots),
     recoveredGaps: state.recoveredGaps,
     recoveredRevenue: state.recoveredRevenue,
   };
@@ -140,14 +168,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Acción no válida" }, { status: 400 });
   }
 
-  const { appointments, waitingList, gabinetes, decision } =
-    await loadStateData();
+  const {
+    appointments,
+    waitingList,
+    gabinetes,
+    decision,
+    totalAvailableSlots,
+  } = await loadStateData();
 
   const state = buildOrbitalState(appointments, waitingList, decision);
 
   const metrics = {
     appointmentsCount: countTodayAppointments(appointments),
-    occupancy: calculateOccupancy(appointments, TOTAL_AVAILABLE_SLOTS),
+    occupancy: calculateOccupancy(appointments, totalAvailableSlots),
     recoveredGaps: state.recoveredGaps,
     recoveredRevenue: state.recoveredRevenue,
   };

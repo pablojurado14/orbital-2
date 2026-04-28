@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model ClinicSettings {
@@ -49,7 +49,6 @@ model TreatmentType {
   id              Int           @id @default(autoincrement())
   name            String        @unique
   duration        Int
-  color           String        @default("#E0F2FE")
   price           Float?
   active          Boolean       @default(true)
   appointments    Appointment[]
@@ -66,7 +65,7 @@ model Patient {
   inWaitingList        Boolean       @default(false)
   waitingTreatmentId   Int?
   waitingDurationSlots Int?
-  waitingValue         Int?
+  waitingValue         Float?
   priority             Int           @default(1)
   availableNow         Boolean       @default(true)
   easeScore            Int           @default(5)

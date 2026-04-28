@@ -3,7 +3,12 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
-export async function saveGabinete(data: { id?: number; name: string; description?: string; active: boolean }) {
+export async function saveGabinete(data: {
+  id?: number;
+  name: string;
+  description?: string;
+  active: boolean;
+}) {
   try {
     if (data.id) {
       await prisma.gabinete.update({
@@ -23,12 +28,16 @@ export async function saveGabinete(data: { id?: number; name: string; descriptio
         },
       });
     }
-    
+
     revalidatePath("/settings/gabinetes");
     return { success: true };
   } catch (error) {
+    const err = error as { code?: string; meta?: { target?: string[] | string } };
+    if (err?.code === "P2002") {
+      return { success: false, error: `Ya existe un gabinete con ese nombre.` };
+    }
     console.error("Error saving gabinete:", error);
-    return { success: false, error: "No se pudo guardar el gabinete. Verifica que el nombre no esté duplicado." };
+    return { success: false, error: "No se pudo guardar el gabinete." };
   }
 }
 
@@ -38,15 +47,15 @@ export async function deleteGabinete(id: number) {
     const hasPatients = await prisma.patient.findFirst({ where: { preferredGabineteId: id } });
 
     if (hasAppointments || hasPatients) {
-       await prisma.gabinete.update({ 
-         where: { id }, 
-         data: { active: false } 
-       });
-       revalidatePath("/settings/gabinetes");
-       return { 
-         success: true, 
-         message: "El gabinete tiene citas o pacientes asociados. Se ha desactivado para proteger el historial." 
-       };
+      await prisma.gabinete.update({
+        where: { id },
+        data: { active: false },
+      });
+      revalidatePath("/settings/gabinetes");
+      return {
+        success: true,
+        message: "El gabinete tiene citas o pacientes asociados. Se ha desactivado para proteger el historial.",
+      };
     }
 
     await prisma.gabinete.delete({ where: { id } });

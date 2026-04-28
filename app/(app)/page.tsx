@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Sidebar from "@/components/Sidebar";
 import { KPIGrid } from "@/components/KPIGrid";
 import AgendaGrid from "@/components/AgendaGrid";
 import OrbitalPanel from "@/components/OrbitalPanel";
@@ -112,7 +111,7 @@ export default function Dashboard() {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-50">
+      <div className="flex h-full items-center justify-center">
         <div className="mx-4 w-full max-w-md rounded-lg border border-red-200 bg-red-50 p-6 text-center">
           <h2 className="mb-2 text-lg font-semibold text-red-700">
             No se ha podido cargar el dashboard
@@ -132,7 +131,7 @@ export default function Dashboard() {
 
   if (loading || !state) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-50">
+      <div className="flex h-full items-center justify-center">
         <div className="text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600"></div>
           <p className="font-medium text-slate-500">Cargando Orbital 2.0...</p>
@@ -142,41 +141,35 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 font-sans text-slate-900">
-      <Sidebar />
-
-      <main className="flex-1 overflow-y-auto p-8">
-        <header className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Panel de Control</h1>
-            <p className="text-slate-500">Optimización operativa en tiempo real</p>
-          </div>
-        </header>
-
-        <KPIGrid metrics={state.metrics} />
-
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-          <div className="lg:col-span-2">
-            <AgendaGrid
-              appointments={state.appointments}
-              gabinetes={state.gabinetes}
-            />
-          </div>
-
-          <div>
-            <OrbitalPanel
-              suggestion={state.suggestion}
-              rankedCandidates={state.rankedCandidates}
-              events={state.events}
-              recommendationReason={state.recommendationReason}
-              recoveredRevenue={state.recoveredRevenue}
-              recoveredGaps={state.recoveredGaps}
-              decision={state.decision}
-              onStateChange={setState}
-            />
-          </div>
+    <div className="font-sans text-slate-900">
+      <header className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Panel de Control</h1>
+          <p className="text-slate-500">Optimización operativa en tiempo real</p>
         </div>
-      </main>
+      </header>
+
+      <KPIGrid metrics={state.metrics} />
+
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <AgendaGrid
+            appointments={state.appointments}
+            gabinetes={state.gabinetes}
+          />
+        </div>
+
+        <div>
+          <OrbitalPanel
+            suggestion={state.suggestion}
+            rankedCandidates={state.rankedCandidates}
+            events={state.events}
+            recommendationReason={state.recommendationReason}
+            decision={state.decision}
+            onStateChange={setState}
+          />
+        </div>
+      </div>
     </div>
   );
 }

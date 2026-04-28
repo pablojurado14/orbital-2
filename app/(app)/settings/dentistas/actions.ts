@@ -31,6 +31,13 @@ export async function saveDentist(data: {
     revalidatePath("/settings/dentistas");
     return { success: true };
   } catch (error) {
+    const err = error as { code?: string; meta?: { target?: string[] | string } };
+    if (err?.code === "P2002") {
+      const target = Array.isArray(err.meta?.target)
+        ? err.meta.target.join(", ")
+        : err.meta?.target ?? "campo";
+      return { success: false, error: `Ya existe un dentista con ese ${target}.` };
+    }
     console.error("Error saving dentist:", error);
     return { success: false, error: "Error al guardar el dentista." };
   }
@@ -48,6 +55,7 @@ export async function deleteDentist(id: number) {
     revalidatePath("/settings/dentistas");
     return { success: true };
   } catch (error) {
+    console.error("Error deleting dentist:", error);
     return { success: false, error: "No se pudo eliminar." };
   }
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { saveGabinete, deleteGabinete } from "./actions";
 
 type Gabinete = {
@@ -11,7 +12,7 @@ type Gabinete = {
 };
 
 export default function GabinetesClient({ initialGabinetes }: { initialGabinetes: Gabinete[] }) {
-  const [gabinetes, setGabinetes] = useState<Gabinete[]>(initialGabinetes);
+  const router = useRouter();
   const [selectedGab, setSelectedGab] = useState<Gabinete | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -44,12 +45,14 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
       active: formData.active,
     });
 
+    setIsSaving(false);
+
     if (result.success) {
       setFeedback({ type: "success", message: "Gabinete guardado correctamente." });
-      window.location.reload(); 
+      handleResetForm();
+      router.refresh();
     } else {
       setFeedback({ type: "error", message: result.error || "Error al guardar." });
-      setIsSaving(false);
     }
   };
 
@@ -58,13 +61,13 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
 
     setIsSaving(true);
     const result = await deleteGabinete(id);
+    setIsSaving(false);
 
     if (result.success) {
-      alert(result.message || "Gabinete eliminado.");
-      window.location.reload();
+      setFeedback({ type: "success", message: result.message || "Gabinete eliminado." });
+      router.refresh();
     } else {
-      alert(result.error);
-      setIsSaving(false);
+      setFeedback({ type: "error", message: result.error || "Error al eliminar." });
     }
   };
 
@@ -73,18 +76,18 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
       <div className="col-span-2 border-r border-slate-200">
         <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
           <h2 className="font-bold text-slate-800">Directorio de Gabinetes</h2>
-          <button 
+          <button
             onClick={handleResetForm}
             className="text-sm bg-slate-800 text-white px-3 py-1.5 rounded-md hover:bg-slate-700 transition-colors"
           >
             + Nuevo Gabinete
           </button>
         </div>
-        
+
         <div className="divide-y divide-slate-100">
           {initialGabinetes.map((gab) => (
-            <div 
-              key={gab.id} 
+            <div
+              key={gab.id}
               className={`p-4 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors ${selectedGab?.id === gab.id ? "bg-teal-50 hover:bg-teal-50" : ""}`}
               onClick={() => handleSelect(gab)}
             >
@@ -99,14 +102,21 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
                 </div>
                 <p className="text-sm text-slate-500 mt-1">{gab.description || "Sin descripción"}</p>
               </div>
-              
+
               <div className="flex gap-2">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); handleDelete(gab.id); }}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(gab.id);
+                  }}
                   className="text-slate-400 hover:text-red-500 p-2"
                   title="Eliminar"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18"></path>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                  </svg>
                 </button>
               </div>
             </div>
@@ -130,8 +140,8 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Nombre <span className="text-red-500">*</span>
             </label>
-            <input 
-              type="text" 
+            <input
+              type="text"
               required
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -144,7 +154,7 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Descripción (opcional)
             </label>
-            <textarea 
+            <textarea
               rows={3}
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
@@ -154,8 +164,8 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
           </div>
 
           <div className="flex items-center gap-2 pt-2">
-            <input 
-              type="checkbox" 
+            <input
+              type="checkbox"
               id="activeCheckbox"
               checked={formData.active}
               onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
@@ -167,14 +177,14 @@ export default function GabinetesClient({ initialGabinetes }: { initialGabinetes
           </div>
 
           {feedback && (
-            <div className={`p-3 rounded-lg text-sm mt-4 ${feedback.type === 'success' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            <div className={`p-3 rounded-lg text-sm mt-4 ${feedback.type === "success" ? "bg-teal-50 text-teal-700 border border-teal-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
               {feedback.message}
             </div>
           )}
 
           <div className="pt-6">
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               disabled={isSaving}
               className="w-full bg-teal-600 text-white font-bold py-2.5 px-4 rounded-lg hover:bg-teal-700 transition-colors disabled:opacity-50"
             >

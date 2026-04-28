@@ -13,7 +13,7 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/" },
   { label: "Pacientes", href: "/pacientes" },
-  { label: "Citas", href: "/citas", disabled: true },
+  { label: "Citas", href: "/citas" },
   { label: "Configuración", href: "/settings/gabinetes", matchPrefix: true },
 ];
 
