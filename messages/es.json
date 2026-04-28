@@ -1,0 +1,36 @@
+{
+  "explanation": {
+    "FIT_EXACT": "encaje perfecto en duración",
+    "FIT_NEAR": "encaje razonable en duración",
+    "FIT_LOOSE": "encaje amplio con margen",
+    "RESOURCE_MATCH": "compatibilidad con gabinete",
+    "RESOURCE_MISMATCH": "gabinete no preferido",
+    "RESOURCE_NEUTRAL": "sin preferencia de gabinete",
+    "AVAILABILITY_IMMEDIATE": "disponibilidad inmediata",
+    "AVAILABILITY_LIMITED": "disponibilidad limitada",
+    "VALUE_HIGH": "valor económico alto",
+    "VALUE_LOW": "valor económico bajo",
+    "PRIORITY_HIGH": "alta prioridad clínica",
+    "PRIORITY_LOW": "baja prioridad clínica",
+    "EASE_HIGH": "ejecución sencilla",
+    "EASE_LOW": "ejecución compleja"
+  },
+  "status": {
+    "confirmed": "Confirmada",
+    "delayed": "Con retraso",
+    "cancelled": "Cancelada",
+    "suggested": "Sugerida"
+  },
+  "events": {
+    "gap_detected_title": "Cancelación detectada",
+    "gap_detected_body": "{gabinete} · {patient} ha cancelado su cita de {minutes} min. Orbital detecta el hueco operativo disponible.",
+    "suggestion_title": "Sugerencia de relleno",
+    "suggestion_body": "{patient} propuesto para cubrir el hueco con {treatment}. Valor recuperable: {value}.",
+    "decision_accepted_title": "Caso resuelto",
+    "decision_accepted_body": "La sugerencia ha sido aceptada. El hueco operativo ya se considera cubierto.",
+    "decision_rejected_title": "Caso descartado",
+    "decision_rejected_body": "La sugerencia ha sido rechazada. Puedes reabrir el caso si necesitas volver a evaluarlo.",
+    "no_candidates": "No hay candidatos en lista de espera que encajen en el hueco.",
+    "no_suggestion_pending": "No hay sugerencia activa. El motor seguirá monitorizando la agenda."
+  }
+}

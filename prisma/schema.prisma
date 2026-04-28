@@ -50,6 +50,7 @@ model TreatmentType {
   name            String        @unique
   duration        Int
   price           Float?
+  currency        String        @default("EUR")
   active          Boolean       @default(true)
   appointments    Appointment[]
   waitingPatients Patient[]     @relation("PatientWaitingTreatment")
@@ -66,6 +67,7 @@ model Patient {
   waitingTreatmentId   Int?
   waitingDurationSlots Int?
   waitingValue         Float?
+  waitingCurrency      String        @default("EUR")
   priority             Int           @default(1)
   availableNow         Boolean       @default(true)
   easeScore            Int           @default(5)
@@ -84,6 +86,7 @@ model Appointment {
   duration        Int
   status          String        @default("scheduled")
   value           Float?
+  currency        String        @default("EUR")
   notes           String?
   patientId       Int
   patient         Patient       @relation(fields: [patientId], references: [id])
