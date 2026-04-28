@@ -1,52 +1,28 @@
 /**
- * ORBITAL Core — Primitivas fundamentales
- * -----------------------------------------------------------------------------
- * Tipos universales que el motor maneja. El core razona sobre estos primitivos
- * sin conocer dominio (dental, hospital), idioma, moneda ni unidades temporales
- * concretas (no asume "slots de 30 min").
- *
- * Ver core-contract.md §3.
+ * Primitivas tipadas del clean core agnóstico.
+ * Sin dependencias externas. Compatible con cualquier vertical y locale.
  */
 
-/** Identificador opaco de recurso físico (sillón, sala, quirófano, box). */
+/** Identificador opaco de un recurso (gabinete, sala, equipamiento). */
 export type ResourceId = string;
 
-/** Identificador opaco de evento programado. */
+/** Identificador opaco de un evento agendado (cita, bloque, reserva). */
 export type EventId = string;
 
-/** Identificador opaco de candidato en lista de espera. */
+/** Identificador opaco de un candidato en lista de espera. */
 export type CandidateId = string;
 
-/**
- * Instante en el tiempo, expresado como epoch milliseconds en UTC.
- * El core NUNCA maneja timezones. Toda conversión a TZ del tenant
- * vive en capa de presentación (ui/format.ts).
- *
- * Cierra estructuralmente INTL-3 e elimina la mitigación
- * TZ-MADRID-VERCEL aplicada en Sesión 8.
- */
+/** Instante en tiempo: epoch ms en UTC. La conversión a TZ vive en ui/format.ts. */
 export type InstantUTC = number;
 
-/**
- * Duración en milisegundos.
- * El core NO conoce "slots". Los slots son una decisión de presentación.
- * Ejemplo: 30 min = 30 * 60 * 1000 = 1_800_000 ms.
- *
- * Cierra estructuralmente GRANULARITY-15MIN: el core acepta cualquier
- * granularidad temporal sin asumir slots de 30 min.
- */
+/** Duración en milisegundos. Sin asumir slots ni granularidad. */
 export type DurationMs = number;
 
-/**
- * Cantidad monetaria, cruda y sin moneda.
- * La moneda vive en metadata externa (Clinic.currency en Sesiones 12+).
- * El core asume que todos los valores de una ejecución están en la misma
- * moneda; responsabilidad del caller garantizarlo.
- */
+/** Cantidad monetaria sin moneda. La moneda es metadata de tenant. */
 export type MonetaryAmount = number;
 
-/**
- * Ratio normalizado en [0, 1]. Usado para scores y sub-scores.
- * El core clampea valores fuera de rango con Math.max/min; no lanza error.
- */
+/** Score normalizado entre 0 y 1. Validado en construcción. */
 export type ScoreRatio = number;
+
+export const SLOT_30_MIN_MS: DurationMs = 30 * 60 * 1000;
+export const SLOT_15_MIN_MS: DurationMs = 15 * 60 * 1000;

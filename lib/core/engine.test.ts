@@ -2,12 +2,25 @@
  * ORBITAL Core — Tests del motor
  * -----------------------------------------------------------------------------
  * Cubre los 7 invariantes definidos en core-contract.md §9.
+ *
+ * Notas Sesión 10:
+ *  - Tests reescritos contra la API real de Sesión 9 v1.0. Las aserciones que
+ *    usaban `result.gaps`, `result.rankingsByGap` o `s.value` se reformulan
+ *    porque la API actual embebe el gap dentro de cada Suggestion y no expone
+ *    rankings separados.
+ *  - Helper `rankingForOrigin(result, originEventId)` reconstruye el ranking
+ *    completo (recommended + alternatives) para los tests que lo necesitan.
  */
 
 import { describe, it, expect } from "vitest";
 import { decideFillForGap } from "./engine";
 import { DEFAULT_CONFIG, validateConfig } from "./config";
-import type { ScheduledEvent, WaitingCandidate } from "./types";
+import type {
+  EngineResult,
+  RankedCandidate,
+  ScheduledEvent,
+  WaitingCandidate,
+} from "./types";
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -28,15 +41,28 @@ function makeEvent(overrides: Partial<ScheduledEvent>): ScheduledEvent {
 function makeCandidate(overrides: Partial<WaitingCandidate>): WaitingCandidate {
   return {
     id: "cand-1",
-    requiredDuration: 30 * MIN,
+    desiredDuration: 30 * MIN,
     value: 100,
-    preferredResourceId: null,
     availableNow: true,
     easeScore: 0.5,
     priority: 0.5,
     externalRefs: {},
     ...overrides,
   };
+}
+
+/**
+ * Helper: reconstruye el ranking completo (recommended + alternatives)
+ * de un gap concreto identificado por su originEventId.
+ * Devuelve [] si no hay suggestion para ese gap.
+ */
+function rankingForOrigin(
+  result: EngineResult,
+  originEventId: string,
+): readonly RankedCandidate[] {
+  const sug = result.suggestions.find((s) => s.gap.originEventId === originEventId);
+  if (!sug) return [];
+  return [sug.recommended, ...sug.alternatives];
 }
 
 /**
@@ -58,7 +84,7 @@ function buildSeedScenario() {
   const waitingList: WaitingCandidate[] = [
     makeCandidate({
       id: "cand-monica",
-      requiredDuration: 60 * MIN,
+      desiredDuration: 60 * MIN,
       value: 180,
       preferredResourceId: "gab-4",
       availableNow: true,
@@ -67,7 +93,7 @@ function buildSeedScenario() {
     }),
     makeCandidate({
       id: "cand-luis",
-      requiredDuration: 90 * MIN,
+      desiredDuration: 90 * MIN,
       value: 400,
       preferredResourceId: "gab-2",
       availableNow: false,
@@ -76,16 +102,16 @@ function buildSeedScenario() {
     }),
     makeCandidate({
       id: "cand-jorge",
-      requiredDuration: 30 * MIN,
+      desiredDuration: 30 * MIN,
       value: 60,
-      preferredResourceId: null,
+      // sin preferredResourceId → resource "neutral"
       availableNow: true,
       easeScore: 1.0,
       priority: 0.6,
     }),
     makeCandidate({
       id: "cand-pilar",
-      requiredDuration: 60 * MIN,
+      desiredDuration: 60 * MIN,
       value: 90,
       preferredResourceId: "gab-4",
       availableNow: true,
@@ -142,7 +168,7 @@ describe("validateConfig — invariante de pesos", () => {
         availability: 0, resource: 0, priority: 0,
       },
     };
-    expect(() => validateConfig(bad)).toThrow(/suma de los pesos/);
+    expect(() => validateConfig(bad)).toThrow(/debe sumar 1\.0/);
   });
 
   it("rechaza pesos negativos", () => {
@@ -153,7 +179,7 @@ describe("validateConfig — invariante de pesos", () => {
         availability: 0.1, resource: 0.05, priority: 0.1,
       },
     };
-    expect(() => validateConfig(bad)).toThrow(/peso puede ser negativo/);
+    expect(() => validateConfig(bad)).toThrow(/no puede ser negativo/);
   });
 });
 
@@ -162,12 +188,14 @@ describe("validateConfig — invariante de pesos", () => {
 // =============================================================================
 
 describe("decideFillForGap — invariante de resultado", () => {
-  it("toda suggestion referencia un gap válido", () => {
+  it("toda suggestion contiene un gap que apunta a un evento cancelado real", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList);
     for (const s of result.suggestions) {
-      const gap = result.gaps.find((g) => g.sourceEventId === s.gapSourceEventId);
-      expect(gap).toBeDefined();
+      expect(s.gap).toBeDefined();
+      const originEvent = events.find((e) => e.id === s.gap.originEventId);
+      expect(originEvent).toBeDefined();
+      expect(originEvent?.status).toBe("cancelled");
     }
   });
 
@@ -175,23 +203,25 @@ describe("decideFillForGap — invariante de resultado", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList, DEFAULT_CONFIG, "pending");
     expect(result.recoveredValue).toBe(0);
-    expect(result.recoveredGapsCount).toBe(0);
+    expect(result.recoveredGaps).toBe(0);
   });
 
-  it("recoveredValue=sum(suggestions.value) cuando decision='accepted'", () => {
+  it("recoveredValue=sum(value de los recommended) cuando decision='accepted'", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList, DEFAULT_CONFIG, "accepted");
-    const expectedSum = result.suggestions.reduce((sum, s) => sum + s.value, 0);
+    const expectedSum = result.suggestions.reduce((sum, s) => {
+      const cand = waitingList.find((c) => c.id === s.recommended.candidateId);
+      return sum + (cand?.value ?? 0);
+    }, 0);
     expect(result.recoveredValue).toBe(expectedSum);
-    expect(result.recoveredGapsCount).toBe(result.suggestions.length);
+    expect(result.recoveredGaps).toBe(result.suggestions.length);
   });
 
-  it("recoveredValue=0 y suggestions=[] cuando decision='rejected'", () => {
+  it("recoveredValue=0 y recoveredGaps=0 cuando decision='rejected'", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList, DEFAULT_CONFIG, "rejected");
     expect(result.recoveredValue).toBe(0);
-    expect(result.recoveredGapsCount).toBe(0);
-    expect(result.suggestions).toEqual([]);
+    expect(result.recoveredGaps).toBe(0);
   });
 });
 
@@ -210,20 +240,22 @@ describe("decideFillForGap — monotonicidad", () => {
       }),
     ];
     const dominant = makeCandidate({
-      id: "cand-dom", requiredDuration: 60 * MIN, value: 200,
+      id: "cand-dom", desiredDuration: 60 * MIN, value: 200,
       preferredResourceId: "gab-1", availableNow: true,
       easeScore: 1.0, priority: 1.0,
     });
     const dominated = makeCandidate({
-      id: "cand-sub", requiredDuration: 60 * MIN, value: 100,
+      id: "cand-sub", desiredDuration: 60 * MIN, value: 100,
       preferredResourceId: "gab-1", availableNow: true,
       easeScore: 0.5, priority: 0.5,
     });
 
     const result = decideFillForGap(events, [dominant, dominated]);
-    const ranking = result.rankingsByGap.get("ev-cancel")!;
-    expect(ranking[0].candidateId).toBe("cand-dom");
-    expect(ranking[0].totalScore).toBeGreaterThan(ranking[1].totalScore);
+    expect(result.suggestions).toHaveLength(1);
+    const sug = result.suggestions[0];
+    expect(sug.recommended.candidateId).toBe("cand-dom");
+    expect(sug.alternatives).toHaveLength(1);
+    expect(sug.recommended.totalScore).toBeGreaterThan(sug.alternatives[0].totalScore);
   });
 });
 
@@ -237,8 +269,8 @@ describe("decideFillForGap — estabilidad", () => {
     const reversed = [...waitingList].reverse();
     const r1 = decideFillForGap(events, waitingList);
     const r2 = decideFillForGap(events, reversed);
-    const ranking1 = r1.rankingsByGap.get("ev-david")!;
-    const ranking2 = r2.rankingsByGap.get("ev-david")!;
+    const ranking1 = rankingForOrigin(r1, "ev-david");
+    const ranking2 = rankingForOrigin(r2, "ev-david");
     expect(ranking1.map((r) => r.candidateId)).toEqual(
       ranking2.map((r) => r.candidateId),
     );
@@ -253,24 +285,24 @@ describe("decideFillForGap — fidelidad numérica con v7.3", () => {
   it("top candidate del seed es Mónica T. con score 0.98", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList);
-    expect(result.gaps).toHaveLength(1);
-    expect(result.gaps[0].sourceEventId).toBe("ev-david");
-    const ranking = result.rankingsByGap.get("ev-david")!;
-    expect(ranking[0].candidateId).toBe("cand-monica");
-    expect(ranking[0].totalScore).toBeCloseTo(0.98, 2);
+    expect(result.suggestions).toHaveLength(1);
+    const sug = result.suggestions[0];
+    expect(sug.gap.originEventId).toBe("ev-david");
+    expect(sug.recommended.candidateId).toBe("cand-monica");
+    expect(sug.recommended.totalScore).toBeCloseTo(0.98, 2);
   });
 
   it("Luis F. (90 min en gap de 60 min) descartado por hard_filter", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList);
-    const ranking = result.rankingsByGap.get("ev-david")!;
+    const ranking = rankingForOrigin(result, "ev-david");
     expect(ranking.find((r) => r.candidateId === "cand-luis")).toBeUndefined();
   });
 
   it("orden completo de viables: Mónica > Pilar > Jorge", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList);
-    const ranking = result.rankingsByGap.get("ev-david")!;
+    const ranking = rankingForOrigin(result, "ev-david");
     expect(ranking.map((r) => r.candidateId)).toEqual([
       "cand-monica",
       "cand-pilar",
@@ -281,8 +313,7 @@ describe("decideFillForGap — fidelidad numérica con v7.3", () => {
   it("explicación de Mónica incluye FIT_EXACT y RESOURCE_MATCH", () => {
     const { events, waitingList } = buildSeedScenario();
     const result = decideFillForGap(events, waitingList);
-    const ranking = result.rankingsByGap.get("ev-david")!;
-    const monica = ranking[0];
+    const monica = result.suggestions[0].recommended;
     expect(monica.explanationCodes).toContain("FIT_EXACT");
     expect(monica.explanationCodes).toContain("RESOURCE_MATCH");
   });
@@ -295,9 +326,9 @@ describe("decideFillForGap — fidelidad numérica con v7.3", () => {
 describe("decideFillForGap — edge cases", () => {
   it("events vacío devuelve resultado vacío", () => {
     const result = decideFillForGap([], []);
-    expect(result.gaps).toEqual([]);
     expect(result.suggestions).toEqual([]);
-    expect(result.rankingsByGap.size).toBe(0);
+    expect(result.recoveredValue).toBe(0);
+    expect(result.recoveredGaps).toBe(0);
   });
 
   it("sin gaps (no hay cancelled) devuelve resultado vacío", () => {
@@ -307,11 +338,10 @@ describe("decideFillForGap — edge cases", () => {
     ];
     const candidates = [makeCandidate({})];
     const result = decideFillForGap(events, candidates);
-    expect(result.gaps).toEqual([]);
     expect(result.suggestions).toEqual([]);
   });
 
-  it("gap sin candidatos viables: ranking vacío, sin suggestions", () => {
+  it("gap sin candidatos viables: suggestions vacío", () => {
     const today = Date.UTC(2026, 3, 28, 0, 0, 0);
     const events: ScheduledEvent[] = [
       makeEvent({
@@ -320,10 +350,9 @@ describe("decideFillForGap — edge cases", () => {
         status: "cancelled", value: 50,
       }),
     ];
-    const candidates = [makeCandidate({ id: "cand-big", requiredDuration: 60 * MIN })];
+    const candidates = [makeCandidate({ id: "cand-big", desiredDuration: 60 * MIN })];
     const result = decideFillForGap(events, candidates);
-    expect(result.gaps).toHaveLength(1);
     expect(result.suggestions).toEqual([]);
-    expect(result.rankingsByGap.get("ev-cancel")).toEqual([]);
+    expect(result.recoveredGaps).toBe(0);
   });
 });
