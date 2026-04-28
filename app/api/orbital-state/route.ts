@@ -36,12 +36,33 @@ async function ensureSeeded() {
   });
 }
 
-async function loadStateData() {
-  // PROD-1-DEUDA2 — filtro por el día de hoy (TZ servidor; INTL-3 cierra Sesión 9).
+// PROD-1-DEUDA2 + TZ-MADRID-VERCEL — calcula los límites del día actual en
+// zona Europe/Madrid, independientemente del TZ del runtime (Vercel = UTC).
+// Mitigación hasta que INTL-3 cierre en Sesión 9 con UTC interno + conversión
+// a TZ del tenant en presentación según core-contract.md §2.6.
+function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const dateStringMadrid = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Madrid",
+  }).format(now); // "2026-04-28"
+
+  const offsetParts = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Madrid",
+    timeZoneName: "longOffset",
+  }).formatToParts(now);
+  const offsetStr =
+    offsetParts.find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") ||
+    "+00:00";
+
+  const today = new Date(`${dateStringMadrid}T00:00:00${offsetStr}`);
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+
+  return { today, tomorrow };
+}
+
+async function loadStateData() {
+  const { today, tomorrow } = getMadridDayBoundaries();
 
   const [appointmentsRaw, waitingPatientsRaw, gabinetesRaw, runtime] =
     await Promise.all([
