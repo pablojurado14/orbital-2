@@ -2,8 +2,6 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import HorariosClient from "./HorariosClient";
 
-export const dynamic = "force-dynamic";
-
 export default async function HorariosPage() {
   const clinicId = getCurrentClinicId();
 
@@ -18,5 +16,9 @@ export default async function HorariosPage() {
     orderBy: { dayOfWeek: "asc" },
   });
 
-  return <HorariosClient initialSchedules={schedules} clinicName={clinic.name} />;
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+      <HorariosClient initialSchedules={schedules} clinicName={clinic.name} />
+    </div>
+  );
 }
