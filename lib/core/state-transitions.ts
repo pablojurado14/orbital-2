@@ -1,27 +1,24 @@
 /**
- * Transiciones de estado del DayState — Sesión 13.
+ * Transiciones de estado del DayState — Sesión 13 + 14.
  *
  * Aplica una CompositeAction al DayState y devuelve un nuevo DayState
  * hipotético (sin mutación). Función pura.
  *
- * Implementadas en v1: 8 primitivas estructurales que mutan campos del
- * AppointmentState afectado:
- *   - move:                  newStart + newResourceId (gabinete)
- *   - advance:               newStart
- *   - postpone:              newStart
- *   - compress:              estimatedEndDistribution comprimida
- *   - expand:                estimatedEndDistribution expandida
- *   - reassign_professional: appointment.professionalId
- *   - reassign_resource:     gabinete o equipo según resourceKind
- *   - no_op:                 sin cambios
+ * Implementadas en v1: 9 primitivas
+ *   - move:                   newStart + newResourceId (gabinete)
+ *   - advance:                newStart
+ *   - postpone:               newStart
+ *   - compress:               estimatedEndDistribution comprimida
+ *   - expand:                 estimatedEndDistribution expandida
+ *   - reassign_professional:  appointment.professionalId
+ *   - reassign_resource:      gabinete o equipo según resourceKind
+ *   - no_op:                  sin cambios
+ *   - fill_from_waitlist:     inserta nuevo AppointmentState/Runtime sintéticos
+ *                             (Sesión 14: añadida; profesional asignado por
+ *                             primer compatible — deuda GENERATOR-PROF-ASSIGN).
  *
- * Diferidas a Sesión 14 (Generator) o Sesión 15 (Simulator):
- *   - fill_from_waitlist:    requiere construir AppointmentState completo
- *                            desde un WaitingCandidate.
- *   - cancel_and_reschedule: cancela + reagenda.
- *
- * Estas dos lanzan Error si aparecen en una composición — el Validator las
- * rechazará con un test específico hasta que se implementen.
+ * Diferida a sesiones futuras:
+ *   - cancel_and_reschedule:  cancela + reagenda. Lanza UnsupportedPrimitiveError.
  *
  * IMPORTANTE: este módulo NO valida coherencia operativa de las acciones.
  * Solo computa el estado resultante asumiendo que la acción es estructural-
@@ -32,8 +29,7 @@
  * directamente professionalId, roomId ni reservedEquipment. Mantenemos esa
  * información en una tabla auxiliar AppointmentRuntime que se pasa como
  * argumento, paralela a DayState.appointments. Cuando types.ts se extienda
- * (¿Sesión 18?) este shim desaparecerá. Decisión registrada en core-contract
- * pendiente de actualizar en cierre de jornada.
+ * (¿Sesión 18?) este shim desaparecerá.
  */
 
 import type {
@@ -43,12 +39,14 @@ import type {
   CompositeAction,
   CompressAction,
   ExpandAction,
+  FillFromWaitlistAction,
   MoveAction,
   PostponeAction,
   PrimitiveAction,
   ReassignProfessionalAction,
   ReassignResourceAction,
   DurationDistribution,
+  WaitingCandidate,
 } from "./types";
 import type { EventId, ResourceId, InstantUTC, DurationMs } from "./primitives";
 
@@ -56,18 +54,6 @@ import type { EventId, ResourceId, InstantUTC, DurationMs } from "./primitives";
 // Tabla paralela: AppointmentRuntime
 // =============================================================================
 
-/**
- * Información operativa de un appointment que NO está expuesta en
- * AppointmentState (types.ts del modelo mental). El Validator y el Simulator
- * la necesitan para razonar sobre asignaciones de recursos.
- *
- * Convención: para todo eventId presente en DayState.appointments, debe
- * existir UNA y solo UNA entrada AppointmentRuntime con ese mismo eventId.
- * El adapter (Sesión 17) garantizará esta correspondencia.
- *
- * Se mantiene como tabla paralela en lugar de extender AppointmentState
- * para no tocar tipos del modelo mental en Sesión 13.
- */
 export interface AppointmentRuntime {
   readonly eventId: EventId;
   readonly professionalId: ResourceId;
@@ -76,7 +62,6 @@ export interface AppointmentRuntime {
   readonly plannedDuration: DurationMs;
   readonly procedureId: ResourceId;
   readonly patientId: ResourceId;
-  /** Equipos reservados (de la tabla AppointmentEquipment). */
   readonly reservedEquipment: ReadonlyArray<EquipmentReservationInfo>;
 }
 
@@ -86,11 +71,10 @@ export interface EquipmentReservationInfo {
   readonly toMs: InstantUTC;
 }
 
-/** Mapa eventId → AppointmentRuntime. Lo construye el adapter. */
 export type AppointmentRuntimeMap = Readonly<Record<EventId, AppointmentRuntime>>;
 
 // =============================================================================
-// Resultado de aplicar una CompositeAction
+// Resultado y errores
 // =============================================================================
 
 export interface AppliedState {
@@ -98,10 +82,6 @@ export interface AppliedState {
   readonly runtimes: AppointmentRuntimeMap;
 }
 
-/**
- * Error lanzado cuando la composición incluye una primitiva no soportada
- * en v1 (fill_from_waitlist, cancel_and_reschedule). Identificable por nombre.
- */
 export class UnsupportedPrimitiveError extends Error {
   constructor(public readonly kind: string) {
     super(`Primitive '${kind}' not supported in state-transitions v1.`);
@@ -109,15 +89,51 @@ export class UnsupportedPrimitiveError extends Error {
   }
 }
 
-/**
- * Error lanzado cuando una primitiva referencia un eventId inexistente
- * en DayState.appointments / runtimes.
- */
 export class UnknownEventError extends Error {
   constructor(public readonly eventId: EventId) {
     super(`Event '${eventId}' not found in DayState.`);
     this.name = "UnknownEventError";
   }
+}
+
+export class FillFromWaitlistMissingContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FillFromWaitlistMissingContextError";
+  }
+}
+
+// =============================================================================
+// Contexto opcional para fill_from_waitlist
+// =============================================================================
+
+/**
+ * Información que el Generator/Coordinator debe pasar a applyComposite/applyPrimitive
+ * cuando la composición incluye fill_from_waitlist.
+ *
+ * - waitingCandidates: para resolver waitingCandidateId → WaitingCandidate.
+ * - resolveProfessional: callback que decide qué professionalId asignar al hueco
+ *   (típicamente "primer compatible vía listCompatible"). El Generator lo
+ *   inyecta; state-transitions no resuelve esto solo.
+ * - estimatedEndDistribution: distribución de duración estimada del nuevo
+ *   appointment (la habrá calculado C1 Predictor antes de proponer la candidata).
+ *   Si no se proporciona, se construye una distribución degenerada
+ *   (mean=stdDev=0, p10=p50=p90=proposedDuration). Documentado como simplificación v1.
+ */
+export interface FillFromWaitlistContext {
+  readonly waitingCandidates: ReadonlyArray<WaitingCandidate>;
+  readonly resolveProfessional: (
+    candidate: WaitingCandidate,
+    action: FillFromWaitlistAction,
+  ) => ResourceId | null;
+  readonly buildEstimatedDistribution?: (
+    candidate: WaitingCandidate,
+    action: FillFromWaitlistAction,
+  ) => DurationDistribution;
+}
+
+export interface ApplyOptions {
+  readonly fillFromWaitlist?: FillFromWaitlistContext;
 }
 
 // =============================================================================
@@ -170,6 +186,20 @@ function replaceRuntime(
   return { ...runtimes, [eventId]: mutator(r) };
 }
 
+function fallbackDistribution(duration: DurationMs): DurationDistribution {
+  return {
+    mean: duration,
+    stdDev: 0,
+    p10: duration,
+    p50: duration,
+    p90: duration,
+  };
+}
+
+function syntheticEventId(waitingCandidateId: string): EventId {
+  return `waitlist:${waitingCandidateId}`;
+}
+
 // =============================================================================
 // Aplicación de primitivas individuales
 // =============================================================================
@@ -179,9 +209,6 @@ function applyMove(
   runtimes: AppointmentRuntimeMap,
   action: MoveAction,
 ): AppliedState {
-  // En v1, MoveAction.newResourceId se interpreta como nuevo gabinete (room).
-  // Convención del documento de lógica §3 capa 4. Si en futuro se necesita
-  // mover a otro profesional simultáneamente, usar reassign_professional.
   const newRuntimes = replaceRuntime(runtimes, action.eventId, (r) => ({
     ...r,
     start: action.newStart,
@@ -279,15 +306,9 @@ function applyReassignResource(
     return { state, runtimes: newRuntimes };
   }
 
-  // resourceKind === "equipment": reemplaza TODA la lista de equipos reservados
-  // por una sola reserva del nuevo equipo, manteniendo el rango temporal
-  // del primero (asunción simplificadora v1: típicamente las reservas son sobre
-  // el mismo rango). El Generator (Sesión 14) puede producir composiciones más
-  // sofisticadas si necesita varios equipos.
   const r = runtimes[action.eventId];
   if (r === undefined) throw new UnknownEventError(action.eventId);
   if (r.reservedEquipment.length === 0) {
-    // No había equipo previo: añadir uno con rango = [start, start + plannedDuration)
     const newRuntimes = replaceRuntime(runtimes, action.eventId, (rt) => ({
       ...rt,
       reservedEquipment: [
@@ -315,20 +336,93 @@ function applyReassignResource(
   return { state, runtimes: newRuntimes };
 }
 
+function applyFillFromWaitlist(
+  state: DayState,
+  runtimes: AppointmentRuntimeMap,
+  action: FillFromWaitlistAction,
+  options: ApplyOptions,
+): AppliedState {
+  const ctx = options.fillFromWaitlist;
+  if (ctx === undefined) {
+    throw new FillFromWaitlistMissingContextError(
+      "fill_from_waitlist requires options.fillFromWaitlist context (waitingCandidates + resolveProfessional).",
+    );
+  }
+
+  const candidate = ctx.waitingCandidates.find(
+    (c) => c.id === action.waitingCandidateId,
+  );
+  if (candidate === undefined) {
+    throw new FillFromWaitlistMissingContextError(
+      `Waiting candidate '${action.waitingCandidateId}' not found in context.`,
+    );
+  }
+
+  const professionalId = ctx.resolveProfessional(candidate, action);
+  if (professionalId === null) {
+    throw new FillFromWaitlistMissingContextError(
+      `No compatible professional resolved for waiting candidate '${candidate.id}'.`,
+    );
+  }
+
+  const eventId = syntheticEventId(candidate.id);
+  if (runtimes[eventId] !== undefined) {
+    throw new FillFromWaitlistMissingContextError(
+      `Synthetic event '${eventId}' already exists; cannot fill twice from same candidate.`,
+    );
+  }
+
+  // Necesitamos un procedureId para el runtime. Lo derivamos de
+  // candidate.externalRefs.treatmentTypeId si existe; si no, un placeholder.
+  // Esto refleja la convivencia TreatmentType / Procedure hasta Sesión 18.
+  const procedureId =
+    candidate.externalRefs?.treatmentTypeId ?? candidate.externalRefs?.procedureId ?? "unknown";
+  const patientId = candidate.externalRefs?.patientId ?? candidate.id;
+
+  const estimatedEndDistribution =
+    ctx.buildEstimatedDistribution?.(candidate, action) ??
+    fallbackDistribution(action.proposedDuration);
+
+  const newAppointment: AppointmentState = {
+    eventId,
+    runtimeStatus: "scheduled",
+    estimatedEndDistribution,
+    detectedRisks: {
+      overrunProbability: 0,
+      noShowProbability: 0,
+      significantLatenessProbability: 0,
+    },
+  };
+
+  const newRuntime: AppointmentRuntime = {
+    eventId,
+    professionalId,
+    roomId: action.gapResourceId,
+    start: action.gapStart,
+    plannedDuration: action.proposedDuration,
+    procedureId,
+    patientId,
+    reservedEquipment: [],
+  };
+
+  return {
+    state: {
+      ...state,
+      appointments: [...state.appointments, newAppointment],
+    },
+    runtimes: { ...runtimes, [eventId]: newRuntime },
+  };
+}
+
 // =============================================================================
 // API pública
 // =============================================================================
 
-/**
- * Aplica una primitiva al estado. Función pura.
- *
- * @throws UnsupportedPrimitiveError si la primitiva no está implementada en v1.
- * @throws UnknownEventError si la primitiva referencia un eventId inexistente.
- */
 export function applyPrimitive(
   state: DayState,
   runtimes: AppointmentRuntimeMap,
   action: PrimitiveAction,
+  options: ApplyOptions = {},
 ): AppliedState {
   switch (action.kind) {
     case "no_op":
@@ -348,30 +442,21 @@ export function applyPrimitive(
     case "reassign_resource":
       return applyReassignResource(state, runtimes, action);
     case "fill_from_waitlist":
-      throw new UnsupportedPrimitiveError("fill_from_waitlist");
+      return applyFillFromWaitlist(state, runtimes, action, options);
     case "cancel_and_reschedule":
       throw new UnsupportedPrimitiveError("cancel_and_reschedule");
   }
 }
 
-/**
- * Aplica una CompositeAction (secuencia de primitivas) al estado, en orden.
- *
- * Asume que la composición es estructuralmente coherente
- * (validateCompositionCoherence ya pasó en quien construye la composición —
- * típicamente el Generator C3). NO se valida aquí.
- *
- * @throws UnsupportedPrimitiveError si alguna primitiva no está soportada en v1.
- * @throws UnknownEventError si alguna primitiva referencia un eventId inexistente.
- */
 export function applyComposite(
   state: DayState,
   runtimes: AppointmentRuntimeMap,
   action: CompositeAction,
+  options: ApplyOptions = {},
 ): AppliedState {
   let current: AppliedState = { state, runtimes };
   for (const prim of action) {
-    current = applyPrimitive(current.state, current.runtimes, prim);
+    current = applyPrimitive(current.state, current.runtimes, prim, options);
   }
   return current;
 }

@@ -1,14 +1,16 @@
 /**
- * Tests de state-transitions — Sesión 13 sub-fase 13.4.
+ * Tests de state-transitions — Sesión 13 + 14.
  *
- * 4 tests cubriendo el aplicador de CompositeAction al DayState:
+ * 9 tests cubriendo el aplicador de CompositeAction al DayState:
  *  1. no_op no cambia nada (verifica pureza estructural).
  *  2. move muta start + roomId del runtime sin tocar otros.
  *  3. compress muta plannedDuration y escala estimatedEndDistribution.
- *  4. composición de varias primitivas se aplica en orden.
- *
- * Convención: los fixtures construyen un DayState mínimo con 2 appointments
- * para tener algo sobre lo que iterar.
+ *  4. composición secuencial de varias primitivas se aplica en orden.
+ *  5. cancel_and_reschedule lanza UnsupportedPrimitiveError.
+ *  6. eventId inexistente lanza UnknownEventError.
+ *  7. fill_from_waitlist inserta nuevo appointment + runtime sintéticos.
+ *  8. fill_from_waitlist sin contexto lanza error.
+ *  9. fill_from_waitlist sin profesional resuelto lanza error.
  */
 
 import { describe, it, expect } from "vitest";
@@ -136,11 +138,9 @@ describe("state-transitions", () => {
     });
     expect(out.runtimes["apt-1"].plannedDuration).toBe(15 * 60 * 1000);
     const apt1 = out.state.appointments.find((a) => a.eventId === "apt-1")!;
-    // factor = 15/30 = 0.5 → mean original 30 min → ahora 15 min
     expect(apt1.estimatedEndDistribution.mean).toBeCloseTo(15 * 60 * 1000, 5);
     expect(apt1.estimatedEndDistribution.p50).toBeCloseTo(15 * 60 * 1000, 5);
     expect(apt1.estimatedEndDistribution.p90).toBeCloseTo(20 * 60 * 1000, 5);
-    // El otro appointment no se toca
     const apt2 = out.state.appointments.find((a) => a.eventId === "apt-2")!;
     expect(apt2).toBe(state.appointments[1]);
   });
@@ -167,16 +167,13 @@ describe("state-transitions", () => {
     expect(out.runtimes["apt-1"].professionalId).toBe("dent-9");
   });
 
-  it("primitivas no soportadas lanzan UnsupportedPrimitiveError", () => {
+  it("primitivas no soportadas (cancel_and_reschedule) lanzan UnsupportedPrimitiveError", () => {
     const state = buildState();
     const runtimes = buildRuntimes();
     expect(() =>
       applyPrimitive(state, runtimes, {
-        kind: "fill_from_waitlist",
-        waitingCandidateId: "w-1",
-        gapStart: 1730196000000,
-        gapResourceId: "room-1",
-        proposedDuration: 30 * 60 * 1000,
+        kind: "cancel_and_reschedule",
+        eventId: "apt-1",
       }),
     ).toThrow(UnsupportedPrimitiveError);
   });
@@ -191,5 +188,96 @@ describe("state-transitions", () => {
         newStart: 1730203200000,
       }),
     ).toThrow(UnknownEventError);
+  });
+
+  it("fill_from_waitlist inserta un nuevo appointment + runtime sintéticos", () => {
+    const state = buildState();
+    const runtimes = buildRuntimes();
+    const candidate = {
+      id: "wait-7",
+      desiredDuration: 30 * 60 * 1000,
+      value: 80,
+      priority: 0.7,
+      easeScore: 0.8,
+      availableNow: true,
+      externalRefs: {
+        treatmentTypeId: "tt-3",
+        patientId: "pat-7",
+      },
+    };
+    const out = applyPrimitive(
+      state,
+      runtimes,
+      {
+        kind: "fill_from_waitlist",
+        waitingCandidateId: "wait-7",
+        gapStart: 1730203200000,
+        gapResourceId: "room-1",
+        proposedDuration: 30 * 60 * 1000,
+      },
+      {
+        fillFromWaitlist: {
+          waitingCandidates: [candidate],
+          resolveProfessional: () => "dent-1",
+        },
+      },
+    );
+    expect(out.state.appointments).toHaveLength(3);
+    const newApt = out.state.appointments[2];
+    expect(newApt.eventId).toBe("waitlist:wait-7");
+    expect(newApt.runtimeStatus).toBe("scheduled");
+    const newRuntime = out.runtimes["waitlist:wait-7"];
+    expect(newRuntime.professionalId).toBe("dent-1");
+    expect(newRuntime.roomId).toBe("room-1");
+    expect(newRuntime.start).toBe(1730203200000);
+    expect(newRuntime.plannedDuration).toBe(30 * 60 * 1000);
+    expect(newRuntime.procedureId).toBe("tt-3");
+    expect(newRuntime.patientId).toBe("pat-7");
+  });
+
+  it("fill_from_waitlist sin contexto lanza FillFromWaitlistMissingContextError", () => {
+    const state = buildState();
+    const runtimes = buildRuntimes();
+    expect(() =>
+      applyPrimitive(state, runtimes, {
+        kind: "fill_from_waitlist",
+        waitingCandidateId: "wait-7",
+        gapStart: 1730203200000,
+        gapResourceId: "room-1",
+        proposedDuration: 30 * 60 * 1000,
+      }),
+    ).toThrow("fill_from_waitlist requires options.fillFromWaitlist context");
+  });
+
+  it("fill_from_waitlist sin profesional resuelto lanza error", () => {
+    const state = buildState();
+    const runtimes = buildRuntimes();
+    const candidate = {
+      id: "wait-7",
+      desiredDuration: 30 * 60 * 1000,
+      value: 80,
+      priority: 0.7,
+      easeScore: 0.8,
+      availableNow: true,
+    };
+    expect(() =>
+      applyPrimitive(
+        state,
+        runtimes,
+        {
+          kind: "fill_from_waitlist",
+          waitingCandidateId: "wait-7",
+          gapStart: 1730203200000,
+          gapResourceId: "room-1",
+          proposedDuration: 30 * 60 * 1000,
+        },
+        {
+          fillFromWaitlist: {
+            waitingCandidates: [candidate],
+            resolveProfessional: () => null,
+          },
+        },
+      ),
+    ).toThrow("No compatible professional resolved");
   });
 });

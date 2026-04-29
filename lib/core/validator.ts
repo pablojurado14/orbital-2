@@ -37,6 +37,7 @@ import {
   applyComposite,
   type AppointmentRuntime,
   type AppointmentRuntimeMap,
+  type ApplyOptions,
 } from "./state-transitions";
 import {
   instantToDayAndMinutes,
@@ -359,8 +360,9 @@ export function validate(
   state: DayState,
   action: CompositeAction,
   context: ValidationContext,
+  options?: ApplyOptions,
 ): ValidationResult {
-  const applied = applyComposite(state, context.runtimes, action);
+  const applied = applyComposite(state, context.runtimes, action, options);
 
   const physical = checkPhysical(applied.state, applied.runtimes);
   const professionalHours = checkProfessionalHours(
