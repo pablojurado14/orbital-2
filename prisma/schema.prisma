@@ -7,9 +7,9 @@ datasource db {
 }
 
 model ClinicSettings {
-  id                     Int             @id @default(1)
-  name                   String          @default("Mi Clínica Dental")
-  zonaHoraria            String          @default("Europe/Madrid")
+  id                     Int                   @id @default(1)
+  name                   String                @default("Mi Clínica Dental")
+  zonaHoraria            String                @default("Europe/Madrid")
   pesosKpi               Json?
   politicaAutonomia      Json?
   umbralDisparoProactivo Float?
@@ -20,8 +20,10 @@ model ClinicSettings {
   patients               Patient[]
   appointments           Appointment[]
   runtimeStates          RuntimeState[]
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
+  equipment              Equipment[]
+  procedureActivations   ProcedureActivation[]
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
 }
 
 model DaySchedule {
@@ -47,6 +49,7 @@ model Gabinete {
   clinic       ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments Appointment[]
   preferredBy  Patient[]       @relation("PatientPreferredGabinete")
+  equipment    EquipmentRoom[]
 
   @@index([clinicId])
 }
@@ -141,4 +144,90 @@ model RuntimeState {
   clinic             ClinicSettings? @relation(fields: [clinicId], references: [id])
 
   @@index([clinicId])
+}
+
+// ============================================================
+// Catálogo maestro (Sesión 11B)
+// ============================================================
+
+model Procedure {
+  id                               Int                   @id @default(autoincrement())
+  code                             String
+  name                             String
+  category                         String
+  subcategory                      String?
+  requiresProfessionalCapabilities Json
+  requiresRoomCapabilities         Json
+  requiresEquipment                Json
+  requiresAuxiliary                Boolean               @default(false)
+  auxiliaryCapabilities            Json?
+  referenceDurationMean            Float
+  referenceDurationStdDev          Float
+  referenceDurationP10             Float
+  referenceDurationP50             Float
+  referenceDurationP90             Float
+  clinicalDependencies             Json?
+  version                          Int                   @default(1)
+  active                           Boolean               @default(true)
+  activations                      ProcedureActivation[]
+  createdAt                        DateTime              @default(now())
+  updatedAt                        DateTime              @updatedAt
+
+  @@unique([code, version])
+  @@index([category])
+  @@index([active])
+}
+
+model Equipment {
+  id                   Int             @id @default(autoincrement())
+  clinicId             Int
+  type                 String
+  name                 String
+  modality             String
+  setupTimeMs          Int?
+  cleanupTimeMs        Int?
+  sterilizationCycleMs Int?
+  active               Boolean         @default(true)
+  clinic               ClinicSettings  @relation(fields: [clinicId], references: [id])
+  compatibleRooms      EquipmentRoom[]
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([clinicId])
+  @@index([clinicId, type])
+  @@index([clinicId, active])
+}
+
+model EquipmentRoom {
+  equipmentId Int
+  gabineteId  Int
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+  gabinete    Gabinete  @relation(fields: [gabineteId], references: [id], onDelete: Cascade)
+
+  @@id([equipmentId, gabineteId])
+  @@index([gabineteId])
+}
+
+model ProcedureActivation {
+  id                    Int            @id @default(autoincrement())
+  clinicId              Int
+  procedureId           Int
+  active                Boolean        @default(true)
+  price                 Float?
+  currency              String         @default("EUR")
+  learnedDurationMean   Float
+  learnedDurationStdDev Float
+  learnedDurationP10    Float
+  learnedDurationP50    Float
+  learnedDurationP90    Float
+  localRestrictions     Json?
+  clinic                ClinicSettings @relation(fields: [clinicId], references: [id])
+  procedure             Procedure      @relation(fields: [procedureId], references: [id])
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@unique([clinicId, procedureId])
+  @@index([clinicId])
+  @@index([procedureId])
+  @@index([clinicId, active])
 }
