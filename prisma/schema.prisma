@@ -22,6 +22,8 @@ model ClinicSettings {
   runtimeStates          RuntimeState[]
   equipment              Equipment[]
   procedureActivations   ProcedureActivation[]
+  constraintRules        ConstraintRule[]
+  waitlistEntries        WaitlistEntry[]
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
 }
@@ -81,62 +83,73 @@ model TreatmentType {
   clinic          ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments    Appointment[]
   waitingPatients Patient[]       @relation("PatientWaitingTreatment")
+  waitlistEntries WaitlistEntry[]
 
   @@index([clinicId])
 }
 
 model Patient {
-  id                     Int             @id @default(autoincrement())
-  name                   String
-  phone                  String?
-  email                  String?
-  notes                  String?
-  createdAt              DateTime        @default(now())
-  inWaitingList          Boolean         @default(false)
-  waitingTreatmentId     Int?
-  waitingDurationSlots   Int?
-  waitingValue           Float?
-  waitingCurrency        String          @default("EUR")
-  priority               Int             @default(1)
-  availableNow           Boolean         @default(true)
-  easeScore              Int             @default(5)
-  preferredGabineteId    Int?
-  preferredDentistId     Int?
-  noShowScore            Float?
-  latenessMeanMinutes    Float?
-  latenessStdDevMinutes  Float?
-  acceptAdviceScore      Float?
-  clinicId               Int?
-  clinic                 ClinicSettings? @relation(fields: [clinicId], references: [id])
-  preferredGabinete      Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
-  preferredDentist       Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
-  waitingTreatment       TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
-  appointments           Appointment[]
+  id                    Int             @id @default(autoincrement())
+  name                  String
+  phone                 String?
+  email                 String?
+  notes                 String?
+  createdAt             DateTime        @default(now())
+  // Campos waiting* legacy: lectura por motor v7.3. Migrar a WaitlistEntry en Sesion 18.
+  // Deuda: WAITLIST-DUAL-COLUMNS-S18 / WAITLIST-RESYNC-S18.
+  inWaitingList         Boolean         @default(false)
+  waitingTreatmentId    Int?
+  waitingDurationSlots  Int?
+  waitingValue          Float?
+  waitingCurrency       String          @default("EUR")
+  priority              Int             @default(1)
+  availableNow          Boolean         @default(true)
+  easeScore             Int             @default(5)
+  preferredGabineteId   Int?
+  preferredDentistId    Int?
+  noShowScore           Float?
+  latenessMeanMinutes   Float?
+  latenessStdDevMinutes Float?
+  acceptAdviceScore     Float?
+  clinicId              Int?
+  clinic                ClinicSettings? @relation(fields: [clinicId], references: [id])
+  preferredGabinete     Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
+  preferredDentist      Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
+  waitingTreatment      TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
+  appointments          Appointment[]
+  waitlistEntries       WaitlistEntry[]
 
   @@index([clinicId])
 }
 
 model Appointment {
-  id              Int             @id @default(autoincrement())
+  id              Int                    @id @default(autoincrement())
   startTime       String
   date            DateTime
   duration        Int
-  status          String          @default("scheduled")
+  // status: uno de "scheduled" | "confirmed" | "in_waiting_room" | "in_progress"
+  //         | "completed" | "cancelled" | "no_show". Validacion en TS via
+  //         AppointmentRuntimeStatus en lib/core/types.ts.
+  status          String                 @default("scheduled")
   value           Float?
-  currency        String          @default("EUR")
+  currency        String                 @default("EUR")
   notes           String?
+  // Slots reales (rellenados al iniciar/terminar la cita). NULL hasta entonces.
+  actualStartTime DateTime?
+  actualEndTime   DateTime?
   patientId       Int
-  patient         Patient         @relation(fields: [patientId], references: [id])
+  patient         Patient                @relation(fields: [patientId], references: [id])
   dentistId       Int
-  dentist         Dentist         @relation(fields: [dentistId], references: [id])
+  dentist         Dentist                @relation(fields: [dentistId], references: [id])
   gabineteId      Int
-  gabinete        Gabinete        @relation(fields: [gabineteId], references: [id])
+  gabinete        Gabinete               @relation(fields: [gabineteId], references: [id])
   treatmentTypeId Int
-  treatmentType   TreatmentType   @relation(fields: [treatmentTypeId], references: [id])
+  treatmentType   TreatmentType          @relation(fields: [treatmentTypeId], references: [id])
   clinicId        Int?
-  clinic          ClinicSettings? @relation(fields: [clinicId], references: [id])
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  clinic          ClinicSettings?        @relation(fields: [clinicId], references: [id])
+  reservedEquipment AppointmentEquipment[]
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
 
   @@index([clinicId, date])
   @@index([date])
@@ -177,6 +190,7 @@ model Procedure {
   version                          Int                   @default(1)
   active                           Boolean               @default(true)
   activations                      ProcedureActivation[]
+  waitlistEntries                  WaitlistEntry[]
   createdAt                        DateTime              @default(now())
   updatedAt                        DateTime              @updatedAt
 
@@ -186,7 +200,7 @@ model Procedure {
 }
 
 model Equipment {
-  id                   Int             @id @default(autoincrement())
+  id                   Int                    @id @default(autoincrement())
   clinicId             Int
   type                 String
   name                 String
@@ -194,11 +208,12 @@ model Equipment {
   setupTimeMs          Int?
   cleanupTimeMs        Int?
   sterilizationCycleMs Int?
-  active               Boolean         @default(true)
-  clinic               ClinicSettings  @relation(fields: [clinicId], references: [id])
+  active               Boolean                @default(true)
+  clinic               ClinicSettings         @relation(fields: [clinicId], references: [id])
   compatibleRooms      EquipmentRoom[]
-  createdAt            DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
+  appointmentReservations AppointmentEquipment[]
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
 
   @@index([clinicId])
   @@index([clinicId, type])
@@ -237,4 +252,82 @@ model ProcedureActivation {
   @@index([clinicId])
   @@index([procedureId])
   @@index([clinicId, active])
+}
+
+// ============================================================
+// Runtime extendido + restricciones + waitlist (Sesión 11D)
+// ============================================================
+
+// Reservas de equipamiento por cita. Una cita puede reservar varios equipos
+// en ventanas de tiempo distintas dentro de su duracion. Indexable por equipo+rango
+// para deteccion de conflictos en C2 Validator (Sesion 13).
+model AppointmentEquipment {
+  appointmentId    Int
+  equipmentId      Int
+  reservedFromMs   BigInt
+  reservedToMs     BigInt
+  appointment      Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  equipment        Equipment   @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+
+  @@id([appointmentId, equipmentId, reservedFromMs])
+  @@index([equipmentId, reservedFromMs])
+  @@index([appointmentId])
+}
+
+// Restricciones tipadas por clinica. code y hardness son strings con set documentado:
+//   code: uno de los 12 ConstraintCode definidos en lib/core/types.ts
+//   hardness: "hard" | "soft"
+// Validacion en TS via tipos del clean core. Tabla arranca vacia (Sesion 11D);
+// se poblara cuando una clinica configure restricciones especificas.
+model ConstraintRule {
+  id                 Int            @id @default(autoincrement())
+  clinicId           Int
+  code               String
+  hardness           String
+  referencedEntities Json
+  parameters         Json
+  active             Boolean        @default(true)
+  priority           Int?
+  clinic             ClinicSettings @relation(fields: [clinicId], references: [id])
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([clinicId])
+  @@index([clinicId, active])
+  @@index([clinicId, code])
+}
+
+// Waitlist como entidad de primera clase, separada de Patient.waiting*.
+// desiredProcedureId y desiredTreatmentTypeId coexisten hasta Sesion 18:
+//   - 11D backfill solo rellena desiredTreatmentTypeId (motor v7.3 vivo).
+//   - Sesion 18 mapea a desiredProcedureId y deprecia el otro.
+// Deuda: WAITLIST-DUAL-COLUMNS-S18 / WAITLIST-RESYNC-S18.
+model WaitlistEntry {
+  id                      Int            @id @default(autoincrement())
+  clinicId                Int
+  patientId               Int
+  desiredProcedureId      Int?
+  desiredTreatmentTypeId  Int?
+  durationSlots           Int
+  value                   Float
+  currency                String         @default("EUR")
+  priority                Int            @default(1)
+  availableNow            Boolean        @default(true)
+  easeScore               Int            @default(5)
+  urgency                 Int?           @default(3)
+  availabilityWindow      Json?
+  preferredContactChannel String?
+  createdAt               DateTime       @default(now())
+  expiresAt               DateTime?
+  clinic                  ClinicSettings @relation(fields: [clinicId], references: [id])
+  patient                 Patient        @relation(fields: [patientId], references: [id])
+  desiredProcedure        Procedure?     @relation(fields: [desiredProcedureId], references: [id])
+  desiredTreatmentType    TreatmentType? @relation(fields: [desiredTreatmentTypeId], references: [id])
+
+  @@index([clinicId])
+  @@index([clinicId, patientId])
+  @@index([clinicId, availableNow])
+  @@index([patientId])
+  @@index([desiredProcedureId])
+  @@index([desiredTreatmentTypeId])
 }
