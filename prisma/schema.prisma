@@ -59,6 +59,9 @@ model Dentist {
   name         String
   specialty    String?
   active       Boolean         @default(true)
+  capabilities Json?
+  workSchedule Json?
+  hourlyCost   Float?
   clinicId     Int?
   clinic       ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments Appointment[]
@@ -83,28 +86,32 @@ model TreatmentType {
 }
 
 model Patient {
-  id                   Int             @id @default(autoincrement())
-  name                 String
-  phone                String?
-  email                String?
-  notes                String?
-  createdAt            DateTime        @default(now())
-  inWaitingList        Boolean         @default(false)
-  waitingTreatmentId   Int?
-  waitingDurationSlots Int?
-  waitingValue         Float?
-  waitingCurrency      String          @default("EUR")
-  priority             Int             @default(1)
-  availableNow         Boolean         @default(true)
-  easeScore            Int             @default(5)
-  preferredGabineteId  Int?
-  preferredDentistId   Int?
-  clinicId             Int?
-  clinic               ClinicSettings? @relation(fields: [clinicId], references: [id])
-  preferredGabinete    Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
-  preferredDentist     Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
-  waitingTreatment     TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
-  appointments         Appointment[]
+  id                     Int             @id @default(autoincrement())
+  name                   String
+  phone                  String?
+  email                  String?
+  notes                  String?
+  createdAt              DateTime        @default(now())
+  inWaitingList          Boolean         @default(false)
+  waitingTreatmentId     Int?
+  waitingDurationSlots   Int?
+  waitingValue           Float?
+  waitingCurrency        String          @default("EUR")
+  priority               Int             @default(1)
+  availableNow           Boolean         @default(true)
+  easeScore              Int             @default(5)
+  preferredGabineteId    Int?
+  preferredDentistId     Int?
+  noShowScore            Float?
+  latenessMeanMinutes    Float?
+  latenessStdDevMinutes  Float?
+  acceptAdviceScore      Float?
+  clinicId               Int?
+  clinic                 ClinicSettings? @relation(fields: [clinicId], references: [id])
+  preferredGabinete      Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
+  preferredDentist       Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
+  waitingTreatment       TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
+  appointments           Appointment[]
 
   @@index([clinicId])
 }
