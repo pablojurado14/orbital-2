@@ -11,6 +11,34 @@ import {
   countTodayAppointments,
   calculateOccupancy,
 } from "@/lib/dashboard-metrics";
+import { processEvent as cleanCoreProcessEvent } from "@/lib/core/adapter";
+import type { EngineEvent } from "@/lib/core/types";
+
+// =============================================================================
+// Sesión 18 — Flag y shadow mode
+// =============================================================================
+
+/**
+ * Flag de migración del motor v7.3 al motor v2.0 (clean core).
+ *
+ * - USE_CLEAN_CORE=false (default): la API sirve la respuesta del motor v7.3
+ *   legacy intacta. El motor v2.0 NO se ejecuta. Comportamiento previo a
+ *   Sesión 18, sin cambios visibles.
+ *
+ * - USE_CLEAN_CORE=false + SHADOW_MODE=true: la API sigue sirviendo v7.3,
+ *   pero ADEMÁS ejecuta el motor v2.0 en paralelo (después de devolver la
+ *   respuesta) y lo loguea. El usuario no nota nada. Sirve para detectar
+ *   excepciones del adapter contra datos reales antes de flippear.
+ *
+ * - USE_CLEAN_CORE=true (Sesión 18.5+): la API sirve la respuesta del clean
+ *   core traducida a la forma legacy OrbitalState. v7.3 deja de ejecutarse.
+ *   En Sesión 19 se borra lib/orbital-engine.ts.
+ *
+ * Estos flags son constantes hoy. En Sesión 18.5 se promoverán a env vars
+ * (process.env.USE_CLEAN_CORE) para permitir rollback sin redeploy.
+ */
+const USE_CLEAN_CORE = false;
+const SHADOW_MODE = true;
 
 type AppointmentView = {
   id: number;
@@ -40,7 +68,7 @@ async function ensureSeeded() {
 
 // PROD-1-DEUDA2 + TZ-MADRID-VERCEL — calcula los límites del día actual en
 // zona Europe/Madrid, independientemente del TZ del runtime (Vercel = UTC).
-// Mitigación hasta que INTL-3 cierre operativo en Sesión 18.
+// Mitigación hasta que INTL-3 cierre operativo en Sesión 18.5+.
 function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const now = new Date();
 
@@ -138,6 +166,39 @@ async function loadStateData() {
   };
 }
 
+/**
+ * Ejecuta el motor v2.0 (clean core) en shadow mode: lo invoca y loguea el
+ * resultado, pero NO afecta a la respuesta servida al usuario. Si lanza
+ * excepción, se captura y se loguea sin propagarse.
+ *
+ * Disparamos un proactive_tick como evento "neutro" — equivale a la pregunta
+ * "¿qué propone el motor sobre el estado actual sin un evento concreto?".
+ * Cuando flippeemos USE_CLEAN_CORE=true en Sesión 18.5, el evento real
+ * dependerá de la operación (GET = proactive_tick, POST = manual_signal con
+ * la decisión del usuario).
+ */
+async function runShadowModeCleanCore(): Promise<void> {
+  try {
+    const tenantId = String(getCurrentClinicId());
+    const event: EngineEvent = {
+      kind: "proactive_tick",
+      instant: Date.now(),
+      tenantId,
+    };
+    const decision = await cleanCoreProcessEvent(event);
+
+    console.log("[SHADOW] clean core ejecutado OK", {
+      hasProposal: decision.proposal !== null,
+      proposalKind: decision.proposal?.[0]?.kind ?? null,
+      motiveCode: decision.explanation.motiveCode,
+      alternativesCount: decision.explanation.consideredAlternatives.length,
+      autonomyLevel: decision.autonomyLevel,
+    });
+  } catch (e) {
+    console.error("[SHADOW] clean core lanzó excepción:", e);
+  }
+}
+
 export async function GET() {
   await ensureSeeded();
 
@@ -158,7 +219,18 @@ export async function GET() {
     recoveredRevenue: state.recoveredRevenue,
   };
 
-  return NextResponse.json({ ...state, gabinetes, metrics });
+  const response = NextResponse.json({ ...state, gabinetes, metrics });
+
+  // Shadow mode: ejecutar clean core en paralelo (fire-and-forget).
+  // No afecta a la respuesta. No bloquea. Solo loguea para validación.
+  if (!USE_CLEAN_CORE && SHADOW_MODE) {
+    runShadowModeCleanCore().catch(() => {
+      // Defensivo: runShadowModeCleanCore ya captura sus propios errores,
+      // pero si algo se nos escapa, swallow it. Shadow nunca debe fallar la request.
+    });
+  }
+
+  return response;
 }
 
 export async function POST(request: NextRequest) {
@@ -205,5 +277,11 @@ export async function POST(request: NextRequest) {
     recoveredRevenue: state.recoveredRevenue,
   };
 
-  return NextResponse.json({ ...state, gabinetes, metrics });
+  const response = NextResponse.json({ ...state, gabinetes, metrics });
+
+  if (!USE_CLEAN_CORE && SHADOW_MODE) {
+    runShadowModeCleanCore().catch(() => {});
+  }
+
+  return response;
 }
