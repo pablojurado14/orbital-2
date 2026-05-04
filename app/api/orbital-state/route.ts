@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import { seed } from "@/lib/seed";
-import type { SuggestionDecision } from "@/lib/orbital-engine";
+import type { SuggestionDecision } from "@/lib/types/orbital-state";
 import { AppointmentStatus, WaitingPatient, HOURS } from "@/data/mock";
 import {
   countTodayAppointments,

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { HOURS } from "@/data/mock";
-import { getAppointmentStyle, getStatusLabel } from "@/lib/orbital-engine";
+import { getAppointmentStyle, getStatusLabel } from "@/components/styles";
 import AppointmentDetailModal from "@/components/AppointmentDetailModal";
 
 type AppointmentStatus =

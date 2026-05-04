@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getStatusLabel } from "@/lib/orbital-engine";
+import { getStatusLabel } from "@/components/styles";
 import { HOURS } from "@/data/mock";
 
 type AppointmentStatus =

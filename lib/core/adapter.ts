@@ -108,7 +108,7 @@ import type {
   OrbitalState,
   Suggestion,
   SuggestionDecision,
-} from "@/lib/orbital-engine";
+} from "@/lib/types/orbital-state";
 import type {
   Appointment,
   AppointmentStatus,

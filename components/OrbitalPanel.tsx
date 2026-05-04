@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { getEventStyle } from "@/lib/orbital-engine";
+import { getEventStyle } from "@/components/styles";
 
 type EventType = "alert" | "info" | "warning" | "success";
 type SuggestionDecision = "pending" | "accepted" | "rejected";
