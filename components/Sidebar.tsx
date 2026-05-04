@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import { logoutAction } from "@/app/(app)/_actions/auth";
+import AccountModal from "@/components/AccountModal";
 
 type NavItem = {
   label: string;
@@ -20,6 +22,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function Sidebar({ userEmail }: { userEmail: string | null }) {
   const pathname = usePathname();
+  const [accountOpen, setAccountOpen] = useState(false);
 
   const isActive = (item: NavItem) => {
     if (item.matchPrefix) return pathname.startsWith("/settings");
@@ -112,8 +115,11 @@ export default function Sidebar({ userEmail }: { userEmail: string | null }) {
 
       <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
         {userEmail !== null && (
-          <div
+          <button
+            type="button"
+            onClick={() => setAccountOpen(true)}
             style={{
+              display: "block",
               padding: "10px 12px",
               borderRadius: 10,
               background: "rgba(255,255,255,0.04)",
@@ -121,11 +127,16 @@ export default function Sidebar({ userEmail }: { userEmail: string | null }) {
               fontSize: 11,
               color: "#94A3B8",
               wordBreak: "break-all",
+              textAlign: "left",
+              width: "100%",
+              cursor: "pointer",
+              fontFamily: "inherit",
             }}
-            title={userEmail}
+            title={`${userEmail} — Mi cuenta`}
           >
+            <div style={{ fontSize: 9, color: "#64748B", marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.5 }}>Mi cuenta</div>
             {userEmail}
-          </div>
+          </button>
         )}
         <form action={logoutAction}>
           <button
@@ -150,6 +161,12 @@ export default function Sidebar({ userEmail }: { userEmail: string | null }) {
           v2.0 · clean core
         </div>
       </div>
+      <AccountModal
+        isOpen={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        userEmail={userEmail}
+      />
     </aside>
   );
 }
+

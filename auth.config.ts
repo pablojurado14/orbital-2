@@ -50,9 +50,12 @@ export const authConfig = {
       return token;
     },
     session({ session, token }) {
-      // Exponemos clinicId + role en la session para que getCurrentClinicId()
-      // pueda leerlos.
+      // Exponemos id + clinicId + role en la session para que server actions
+      // y getCurrentClinicId() puedan leerlos.
       if (session.user) {
+        if (token.sub !== undefined) {
+          session.user.id = token.sub;
+        }
         (session.user as { clinicId?: number }).clinicId = token.clinicId as number;
         (session.user as { role?: string }).role = token.role as string;
       }
