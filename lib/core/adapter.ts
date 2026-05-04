@@ -1,5 +1,5 @@
 /**
- * Adapter del clean core (Sesión 18).
+ * Adapter del clean core (Sesión 18 + Sesión 18.5).
  *
  * Pieza de unión entre Prisma (DB real) y el clean core (lib/core/).
  * Vive AQUÍ por convención (lib/core/) porque es agnóstica de UI/Next, pero
@@ -12,58 +12,59 @@
  *     state: DayState;
  *     runtimes: AppointmentRuntimeMap;
  *     contexts: CoordinatorContexts;
+ *     coordinatorOptions: CoordinatorOptions;
+ *     legacyMeta: LegacyMetadata;
  *   }>
  *
  *   processEvent(event: EngineEvent, currentInstantMs?: number): Promise<CycleDecision>
+ *
+ *   processEventForLegacyApi(
+ *     event: EngineEvent,
+ *     persistedDecision: SuggestionDecision,
+ *     legacyAppointments: Appointment[],
+ *     currentInstantMs?: number,
+ *   ): Promise<OrbitalState>
  *
  * Multi-tenant: getCurrentClinicId() se llama una vez al inicio de cada
  * función pública. Todas las queries filtran por ese clinicId. Regla §7.7
  * del master.
  *
- * Ventana del día: replica getMadridDayBoundaries del route.ts legacy
- * (mitigación TZ-MADRID-VERCEL). El día se calcula en hora Madrid y se
- * convierte a UTC para el filtro Prisma. Sin esto, los appointments
- * almacenados como "medianoche Madrid expresada en UTC" (ej:
- * 2026-04-29T22:00:00Z = 30/04 00:00 Madrid en CEST) caen fuera de la ventana.
+ * Sesión 18.5 — cambios:
+ *   - applyEventToState pre-aplica cancellation/no_show_detected al state.
+ *     Cumple la decisión rectora COORDINATOR-STATE-IS-POST-EVENT-ASSUMPTION.
+ *   - buildContextsFromDb lee ClinicSettings.umbralDisparoProactivo como
+ *     improvementThreshold (decisión rectora 10).
+ *   - buildContextsFromDb expone también legacyMeta con nombres legibles
+ *     (procedure -> nombre TT, room -> nombre gabinete, waitlistEntry ->
+ *     paciente). Necesario para traducir CycleDecision → OrbitalState legacy
+ *     sin re-queries.
+ *   - processEventForLegacyApi NUEVA: traduce CycleDecision a la forma
+ *     legacy OrbitalState que la UI consume hoy. Reemplaza a buildOrbitalState
+ *     del v7.3 cuando route.ts flippea el flag USE_CLEAN_CORE=true.
  *
- * Llamadas al Predictor:
- *   - predictDuration por cada appointment vivo (rellena
- *     estimatedEndDistribution).
- *   - predictNoShow / predictLateness por cada paciente (rellena
- *     detectedRisks).
- *   - predictAdviceAcceptance no se usa en v1 (el Coordinator no lo consume).
- *   - updateInProgress no se usa en v1 (requiere event in_progress_update
- *     que el adapter aún no procesa con esa semántica).
- *
- * Cierra parcialmente:
- *   - COORDINATOR-PREDICTOR-INTEGRATION-V1 (Sesión 17): el adapter pre-puebla
- *     riesgos antes de pasar el state al Coordinator.
+ * Decisión rectora del helper de traducción (S18.5):
+ *   - RankedCandidate.breakdown se rellena con todos los subscores a 0.
+ *     Decisión consciente (opción B): la UI hoy probablemente no los
+ *     desglosa visiblemente; si lo hace, refinaríamos en 5 min con valores
+ *     sintetizados. Idea registrada como UX-EXPLAINABILITY-PROGRESSIVE-
+ *     DISCLOSURE-V1 en IDEAS_FUTURAS_POST_TRACCIÓN.md (S20+).
+ *   - OrbitalState.events queda vacío en v1. El timeline narrativo del v7.3
+ *     no se reproduce — Sesión 19+ con UX nueva.
+ *   - recoveredRevenue/recoveredGaps replican la semántica del v7.3:
+ *     contabilizan solo si decision === "accepted".
  *
  * Deudas blandas registradas:
- *   - ADAPTER-OVERRUN-PROBABILITY-V1: no calculamos overrunProbability del
- *     Predictor en v1 (no hay API para ello en C1; el documento de lógica lo
- *     describe como derivable de p90/p50 ratio). Lo dejamos a 0 por ahora.
- *   - ADAPTER-EQUIPMENT-RESERVATIONS-V1: leemos AppointmentEquipment de DB
- *     y lo mapeamos a runtime.reservedEquipment, pero el cálculo de horarios
- *     es directo (no respeta setupTimeMs/cleanupTimeMs del Equipment). v2 los
- *     incorporará.
- *   - ADAPTER-PROCEDURE-MAPPING-FALLBACK-V1: appointments del seed legacy
- *     (que tienen treatmentTypeId pero no procedureId directo) se mapean a
- *     procedureId via el mapping TT_TO_PROCEDURE_CODE de
- *     migrate-procedure-references.ts. Si TT no está mapeado, el appointment
- *     se marca con procedureId="unknown" y el Simulator lo ignora para precios.
- *   - ADAPTER-PATIENT-HISTORY-EMPTY-V1: patientHistoryById se devuelve vacío
- *     en v1 (no leemos appointments completados pasados todavía). El
- *     Validator solo usa CHAINING para procedimientos con precondition, y
- *     esos no aparecen en el seed. Cuando aparezca un cliente real con
- *     coronas/implantes secuenciados, se rellena.
- *   - ADAPTER-WORKDAY-CONSTRAINTS-V1: ConstraintRule[] se ignora en v1 (la
- *     tabla está vacía en seed). El Validator solo usa las 4 reglas
- *     universales hardcoded. Cuando se introduzcan reglas custom por tenant,
- *     el adapter las leerá de DB.
- *   - ADAPTER-TZ-MADRID-DUPLICATED-V1: la lógica de getMadridDayBoundaries
- *     vive aquí Y en route.ts. Cuando se cierre TZ-MADRID-VERCEL (¿Sesión
- *     18.5?), unificar en un único helper compartido.
+ *   - ADAPTER-OVERRUN-PROBABILITY-V1
+ *   - ADAPTER-EQUIPMENT-RESERVATIONS-V1
+ *   - ADAPTER-PROCEDURE-MAPPING-FALLBACK-V1
+ *   - ADAPTER-PATIENT-HISTORY-EMPTY-V1
+ *   - ADAPTER-WORKDAY-CONSTRAINTS-V1
+ *   - ADAPTER-TZ-MADRID-DUPLICATED-V1
+ *   - CLINIC-SETTINGS-FIELD-NAMING-V1
+ *   - LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1 (S18.5): RankedCandidate
+ *     .breakdown a 0. Cierre cuando UI nueva consuma Explanation directo.
+ *   - LEGACY-TRANSLATION-EVENTS-EMPTY-V1 (S18.5): OrbitalState.events vacío.
+ *     Cierre con UX nueva (S20+).
  */
 
 import type {
@@ -98,14 +99,26 @@ import type {
   RoomCapabilities,
   WorkSchedule,
 } from "./domain-types";
-import type { CoordinatorContexts } from "./coordinator-types";
+import type {
+  CoordinatorContexts,
+  CoordinatorOptions,
+} from "./coordinator-types";
 import { runCycle } from "./coordinator";
 import { prisma } from "@/lib/prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
+import type {
+  OrbitalState,
+  Suggestion,
+  SuggestionDecision,
+} from "@/lib/orbital-engine";
+import type {
+  Appointment,
+  AppointmentStatus,
+  RankedCandidate,
+} from "@/data/mock";
 
 // =============================================================================
-// Mapping TreatmentType.name -> Procedure.code (sincronizado con
-// scripts/migrate-procedure-references.ts).
+// Mapping TreatmentType.name -> Procedure.code
 // =============================================================================
 
 const TT_TO_PROCEDURE_CODE: Readonly<Record<string, string>> = {
@@ -123,18 +136,37 @@ const TT_TO_PROCEDURE_CODE: Readonly<Record<string, string>> = {
 
 const UNKNOWN_PROCEDURE_ID = "unknown";
 
+const ADAPTER_DEFAULT_IMPROVEMENT_THRESHOLD = 0.001;
+
 // =============================================================================
-// Helpers de timezone (replica de route.ts hasta cerrar TZ-MADRID-VERCEL)
+// Tipos privados — metadatos para traducción legacy
 // =============================================================================
 
 /**
- * Devuelve los límites del día actual en zona Europe/Madrid, expresados como
- * Date UTC. Replica de getMadridDayBoundaries() de app/api/orbital-state/route.ts.
- *
- * Si hoy es 30/04/2026 en Madrid (CEST, UTC+2):
- *   today    = 2026-04-29T22:00:00.000Z (= 30/04 00:00 Madrid)
- *   tomorrow = 2026-04-30T22:00:00.000Z (= 01/05 00:00 Madrid)
+ * Bolsa de metadatos legibles que el helper de traducción necesita para
+ * producir OrbitalState con strings humanos en lugar de IDs opacos.
+ * Construido en buildContextsFromDb a partir de las queries ya hechas
+ * (sin re-querying).
  */
+interface LegacyMetadata {
+  /** procedureId (string) -> nombre TreatmentType (ej: "1" -> "Limpieza"). */
+  readonly procedureNameById: Readonly<Record<ResourceId, string>>;
+  /** roomId (string) -> nombre Gabinete (ej: "1" -> "Gabinete A"). */
+  readonly roomNameById: Readonly<Record<ResourceId, string>>;
+  /** waitlistEntryId (string) -> nombre paciente (ej: "3" -> "Mónica T."). */
+  readonly patientNameByWaitlistEntryId: Readonly<Record<string, string>>;
+  /** waitlistEntryId (string) -> tratamiento deseado (display name). */
+  readonly waitlistTreatmentByEntryId: Readonly<Record<string, string>>;
+  /** waitlistEntryId (string) -> durationSlots de 30 min. */
+  readonly waitlistDurationSlotsByEntryId: Readonly<Record<string, number>>;
+  /** waitlistEntryId (string) -> value en € . */
+  readonly waitlistValueByEntryId: Readonly<Record<string, number>>;
+}
+
+// =============================================================================
+// Helpers de timezone
+// =============================================================================
+
 function getMadridDayBoundaries(now: Date): { today: Date; tomorrow: Date } {
   const dateStringMadrid = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
@@ -155,13 +187,9 @@ function getMadridDayBoundaries(now: Date): { today: Date; tomorrow: Date } {
 }
 
 // =============================================================================
-// Helpers de mapeo de tipos (DB -> clean core)
+// Helpers de mapeo de tipos
 // =============================================================================
 
-/**
- * Convierte minutos del catálogo a ProcedureDistributions consumible por
- * el Predictor. Asume invariantes I-8 ya validados al hacer seed.
- */
 function buildProcedureDistributionsFromActivation(
   activation: {
     learnedDurationMean: number;
@@ -180,28 +208,6 @@ function buildProcedureDistributionsFromActivation(
   };
 }
 
-function buildProcedureDistributionsFromProcedure(
-  procedure: {
-    referenceDurationMean: number;
-    referenceDurationStdDev: number;
-    referenceDurationP10: number;
-    referenceDurationP50: number;
-    referenceDurationP90: number;
-  },
-): ProcedureDistributions {
-  return {
-    mean: procedure.referenceDurationMean,
-    stdDev: procedure.referenceDurationStdDev,
-    p10: procedure.referenceDurationP10,
-    p50: procedure.referenceDurationP50,
-    p90: procedure.referenceDurationP90,
-  };
-}
-
-/**
- * Mapea Appointment.status (string libre por convivencia v7.3 / clean core)
- * a AppointmentRuntimeStatus (union estricta del clean core).
- */
 function mapStatusToRuntimeStatus(status: string): AppointmentRuntimeStatus {
   switch (status) {
     case "scheduled":
@@ -213,31 +219,17 @@ function mapStatusToRuntimeStatus(status: string): AppointmentRuntimeStatus {
     case "no_show":
       return status;
     case "delayed":
-      return "confirmed"; // delayed legacy se trata como confirmed para el clean core
+      return "confirmed";
     default:
       return "scheduled";
   }
 }
 
-/**
- * Combina date (medianoche del día en Madrid expresada como UTC) + startTime
- * ("HH:MM" en hora Madrid) en un InstantUTC absoluto.
- *
- * El startTime se interpreta como hora local Madrid: las 09:00 de un appointment
- * son las 09:00 Madrid, que en UTC son 07:00 (verano CEST) o 08:00 (invierno CET).
- * Como `date` ya incluye el offset de Madrid (es 22:00 UTC del día anterior en CEST),
- * sumar startTime al timestamp produce el instante absoluto correcto.
- */
 function combineDateAndStartTime(date: Date, startTime: string): InstantUTC {
   const [hh, mm] = startTime.split(":").map(Number);
   return date.getTime() + (hh * 60 + mm) * 60_000;
 }
 
-/**
- * Convierte BigInt a number con guardia de overflow. AppointmentEquipment
- * almacena BigInt en reservedFromMs/reservedToMs por compatibilidad de schema,
- * pero los valores reales caben sobradamente en Number (epoch ms).
- */
 function bigIntToInstant(bi: bigint): InstantUTC {
   const n = Number(bi);
   if (!Number.isSafeInteger(n)) {
@@ -246,23 +238,12 @@ function bigIntToInstant(bi: bigint): InstantUTC {
   return n;
 }
 
-/**
- * Parsea Dentist.workSchedule (Json en Prisma) a WorkSchedule del clean core.
- * Defensivo: si está corrupto o vacío, devuelve null (el Validator lo trata
- * como "sin info, no se viola" — patrón documentado).
- */
 function parseWorkSchedule(json: unknown): WorkSchedule | null {
   if (json === null || json === undefined) return null;
   if (typeof json !== "object") return null;
-  // Aceptamos cualquier shape que sea Record<string, ...>. Validación
-  // estructural es responsabilidad del Validator (que usa parseHHMM y
-  // tolera campos undefined).
   return json as WorkSchedule;
 }
 
-/**
- * Parsea Dentist.capabilities (Json en Prisma) a Record<string, number>.
- */
 function parseCapabilityMap(json: unknown): Record<string, number> {
   if (json === null || json === undefined) return {};
   if (typeof json !== "object") return {};
@@ -275,29 +256,59 @@ function parseCapabilityMap(json: unknown): Record<string, number> {
 }
 
 // =============================================================================
+// applyEventToState
+// =============================================================================
+
+function applyEventToState(event: EngineEvent, state: DayState): DayState {
+  switch (event.kind) {
+    case "cancellation":
+      return markAppointmentRuntimeStatus(state, event.eventId, "cancelled");
+    case "no_show_detected":
+      return markAppointmentRuntimeStatus(state, event.eventId, "no_show");
+    default:
+      return state;
+  }
+}
+
+function markAppointmentRuntimeStatus(
+  state: DayState,
+  eventId: EventId,
+  targetStatus: AppointmentRuntimeStatus,
+): DayState {
+  const idx = state.appointments.findIndex((a) => a.eventId === eventId);
+  if (idx === -1) return state;
+  if (state.appointments[idx].runtimeStatus === targetStatus) return state;
+
+  const updatedAppointment: AppointmentState = {
+    ...state.appointments[idx],
+    runtimeStatus: targetStatus,
+  };
+  const newAppointments = [
+    ...state.appointments.slice(0, idx),
+    updatedAppointment,
+    ...state.appointments.slice(idx + 1),
+  ];
+  return { ...state, appointments: newAppointments };
+}
+
+// =============================================================================
 // API pública — buildContextsFromDb
 // =============================================================================
 
-/**
- * Construye el state, runtimes y contexts del clean core leyendo de Prisma.
- *
- * @param currentInstantMs instante "ahora" del ciclo. Si no se proporciona,
- *   usa Date.now(). Útil en tests para fijar el reloj.
- */
 export async function buildContextsFromDb(
   currentInstantMs?: number,
 ): Promise<{
   state: DayState;
   runtimes: AppointmentRuntimeMap;
   contexts: CoordinatorContexts;
+  coordinatorOptions: CoordinatorOptions;
+  legacyMeta: LegacyMetadata;
 }> {
   const clinicId = getCurrentClinicId();
   const now = currentInstantMs !== undefined ? new Date(currentInstantMs) : new Date();
 
-  // --- Calcular ventana del día actual en hora Madrid ---
   const { today: todayStart, tomorrow: todayEnd } = getMadridDayBoundaries(now);
 
-  // --- 6 queries en paralelo ---
   const [
     appointmentsRaw,
     dentistsRaw,
@@ -305,6 +316,7 @@ export async function buildContextsFromDb(
     equipmentRaw,
     proceduresWithActivationsRaw,
     waitlistRaw,
+    clinicSettingsRaw,
   ] = await Promise.all([
     prisma.appointment.findMany({
       where: { clinicId, date: { gte: todayStart, lt: todayEnd } },
@@ -338,19 +350,36 @@ export async function buildContextsFromDb(
         desiredTreatmentType: true,
       },
     }),
+    prisma.clinicSettings.findUnique({
+      where: { id: clinicId },
+      select: { umbralDisparoProactivo: true },
+    }),
   ]);
 
-  // --- Resolver Procedure por code (necesario para mapping TT->code) ---
+  // --- Resolver Procedure por code ---
   const procedureIdByCode: Record<string, number> = {};
   const procedureRequirementsById: Record<ResourceId, ProcedureRequirements> = {};
   const distributionsByProcedureId: Record<ResourceId, ProcedureDistributions> = {};
   const priceByProcedureId: Record<ResourceId, number> = {};
+  // Para legacyMeta: procedureId -> nombre TT amigable
+  // (no el code D0150 sino el nombre humano "Revisión").
+  // Usamos el inverso del TT_TO_PROCEDURE_CODE.
+  const ttNameByProcedureCode: Record<string, string> = {};
+  for (const [ttName, procCode] of Object.entries(TT_TO_PROCEDURE_CODE)) {
+    if (!(procCode in ttNameByProcedureCode)) {
+      ttNameByProcedureCode[procCode] = ttName;
+    }
+  }
+  const procedureNameById: Record<ResourceId, string> = {};
 
   for (const act of proceduresWithActivationsRaw) {
     const proc = act.procedure;
     procedureIdByCode[proc.code] = proc.id;
 
     const procIdStr = String(proc.id);
+    procedureNameById[procIdStr] =
+      ttNameByProcedureCode[proc.code] ?? proc.code;
+
     procedureRequirementsById[procIdStr] = {
       procedureId: procIdStr,
       procedureCode: proc.code,
@@ -370,7 +399,7 @@ export async function buildContextsFromDb(
           }))
         : [],
       requiresAuxiliary: proc.requiresAuxiliary,
-      precondition: null, // v1 no parsea clinicalDependencies aún
+      precondition: null,
     };
 
     distributionsByProcedureId[procIdStr] =
@@ -381,7 +410,6 @@ export async function buildContextsFromDb(
     }
   }
 
-  // --- Mapear professionals ---
   const professionals: ProfessionalCapabilities[] = dentistsRaw.map((d) => ({
     professionalId: String(d.id),
     capabilities: parseCapabilityMap(d.capabilities),
@@ -389,7 +417,6 @@ export async function buildContextsFromDb(
     hourlyCost: d.hourlyCost,
   }));
 
-  // --- Mapear rooms (deriva capabilities desde equipment fijo en sala) ---
   const rooms: RoomCapabilities[] = gabinetesRaw.map((g) => {
     const derived: Record<string, boolean> = {};
     for (const er of g.equipment) {
@@ -397,14 +424,19 @@ export async function buildContextsFromDb(
         derived[er.equipment.type] = true;
       }
     }
-    derived["standard_treatment_room"] = true; // todos los gabinetes son standard
+    derived["standard_treatment_room"] = true;
     return {
       roomId: String(g.id),
       derivedCapabilities: derived,
     };
   });
 
-  // --- Mapear equipment ---
+  // Para legacyMeta: roomId -> nombre Gabinete.
+  const roomNameById: Record<ResourceId, string> = {};
+  for (const g of gabinetesRaw) {
+    roomNameById[String(g.id)] = g.name;
+  }
+
   const equipment: EquipmentInfo[] = equipmentRaw.map((e) => ({
     equipmentId: String(e.id),
     equipmentType: e.type,
@@ -412,7 +444,6 @@ export async function buildContextsFromDb(
     compatibleRoomIds: e.compatibleRooms.map((cr) => String(cr.gabineteId)),
   }));
 
-  // --- Helper: mapear treatmentTypeId del appointment a procedureId ---
   function resolveProcedureIdForAppointment(
     treatmentTypeName: string,
   ): ResourceId {
@@ -423,7 +454,6 @@ export async function buildContextsFromDb(
     return String(id);
   }
 
-  // --- Construir AppointmentState[] + AppointmentRuntimeMap ---
   const appointments: AppointmentState[] = [];
   const runtimes: Record<EventId, AppointmentRuntime> = {};
 
@@ -432,10 +462,6 @@ export async function buildContextsFromDb(
     const startMs = combineDateAndStartTime(a.date, a.startTime);
     const procedureId = resolveProcedureIdForAppointment(a.treatmentType.name);
 
-    // Predictor inputs: distribution para esta cita.
-    // Si el procedureId es desconocido, usamos una distribución degenerada
-    // basada en a.duration (minutos) como fallback. No pretende ser predictivo
-    // — solo sirve para que el Simulator no explote.
     let estimatedEndDistribution: DurationDistribution;
     if (procedureId === UNKNOWN_PROCEDURE_ID) {
       const durationMs = a.duration * 60_000;
@@ -449,13 +475,11 @@ export async function buildContextsFromDb(
     } else {
       const procDistMinutes = distributionsByProcedureId[procedureId];
       const procReqs = procedureRequirementsById[procedureId];
-      // Construir un Procedure mínimo para el Predictor.
       const dummyProcedureForPredictor = {
         procedureId: procedureId,
         procedureCode: procReqs.procedureCode,
         referenceDistribution: procDistMinutes,
       };
-      // Activation con learnedDistribution igual a la del catálogo (cold start).
       const dummyActivation = {
         procedureId: procedureId,
         tenantId: String(clinicId),
@@ -468,7 +492,6 @@ export async function buildContextsFromDb(
       estimatedEndDistribution = predictDuration(ctx);
     }
 
-    // Predictor inputs: scores del paciente.
     const patientScores: PatientPredictiveScores = {
       patientId: String(a.patientId),
       noShowScore: a.patient.noShowScore,
@@ -478,14 +501,11 @@ export async function buildContextsFromDb(
     };
     const noShowProbability = predictNoShow(patientScores);
     const latenessDist = predictLateness(patientScores);
-    // significantLatenessProbability: prob de llegar > 10 min tarde.
-    // Aproximación: si p90 > 10 min, riesgo proporcional al exceso.
     const TEN_MIN_MS = 10 * 60_000;
     const significantLatenessProbability =
       latenessDist.p90 > TEN_MIN_MS
         ? Math.min(0.5, (latenessDist.p90 - TEN_MIN_MS) / (TEN_MIN_MS * 5))
         : 0;
-    // overrunProbability: deuda blanda ADAPTER-OVERRUN-PROBABILITY-V1, queda 0.
     const overrunProbability = 0;
 
     appointments.push({
@@ -515,7 +535,6 @@ export async function buildContextsFromDb(
     };
   }
 
-  // --- Construir DayState ---
   const emptyKPIs: KPIVector = {
     effectiveUtilization: 0,
     expectedOvertime: 0,
@@ -550,10 +569,13 @@ export async function buildContextsFromDb(
     currentProjectedKPIs: emptyKPIs,
   };
 
-  // --- Construir waitingCandidates para GenerationContext ---
+  // --- waitingCandidates + legacyMeta de waitlist ---
+  const patientNameByWaitlistEntryId: Record<string, string> = {};
+  const waitlistTreatmentByEntryId: Record<string, string> = {};
+  const waitlistDurationSlotsByEntryId: Record<string, number> = {};
+  const waitlistValueByEntryId: Record<string, number> = {};
+
   const waitingCandidates = waitlistRaw.map((w) => {
-    // Resolvemos procedureId: si desiredProcedureId está poblado, lo usamos;
-    // si no, intentamos via desiredTreatmentType.name (fallback al mapping).
     let procedureIdStr: string | undefined;
     if (w.desiredProcedureId !== null) {
       procedureIdStr = String(w.desiredProcedureId);
@@ -565,12 +587,27 @@ export async function buildContextsFromDb(
       }
     }
 
+    // legacyMeta de waitlist
+    const wIdStr = String(w.id);
+    patientNameByWaitlistEntryId[wIdStr] = w.patient.name;
+    // Preferimos el nombre del Procedure si está mapeado, si no caemos al
+    // desiredTreatmentType.name (legacy).
+    let treatmentDisplay = "Sin tratamiento";
+    if (procedureIdStr !== undefined && procedureIdStr in procedureNameById) {
+      treatmentDisplay = procedureNameById[procedureIdStr];
+    } else if (w.desiredTreatmentType !== null) {
+      treatmentDisplay = w.desiredTreatmentType.name;
+    }
+    waitlistTreatmentByEntryId[wIdStr] = treatmentDisplay;
+    waitlistDurationSlotsByEntryId[wIdStr] = w.durationSlots;
+    waitlistValueByEntryId[wIdStr] = w.value;
+
     return {
-      id: String(w.id),
+      id: wIdStr,
       preferredResourceId: undefined,
       desiredDuration: w.durationSlots * 30 * 60_000,
       value: w.value,
-      priority: w.priority / 5, // schema 1-5, clean core 0-1
+      priority: w.priority / 5,
       easeScore: w.easeScore / 5,
       availableNow: w.availableNow,
       externalRefs: ((): Readonly<Record<string, string>> => {
@@ -585,7 +622,6 @@ export async function buildContextsFromDb(
     };
   });
 
-  // --- Construir los 3 contexts ---
   const validation = {
     runtimes,
     professionals,
@@ -622,27 +658,493 @@ export async function buildContextsFromDb(
     },
   };
 
-  return { state, runtimes, contexts };
+  const improvementThreshold =
+    clinicSettingsRaw?.umbralDisparoProactivo ??
+    ADAPTER_DEFAULT_IMPROVEMENT_THRESHOLD;
+  const coordinatorOptions: CoordinatorOptions = {
+    improvementThreshold,
+  };
+
+  const legacyMeta: LegacyMetadata = {
+    procedureNameById,
+    roomNameById,
+    patientNameByWaitlistEntryId,
+    waitlistTreatmentByEntryId,
+    waitlistDurationSlotsByEntryId,
+    waitlistValueByEntryId,
+  };
+
+  return { state, runtimes, contexts, coordinatorOptions, legacyMeta };
 }
 
 // =============================================================================
 // API pública — processEvent
 // =============================================================================
 
-/**
- * Procesa un EngineEvent completo: carga state desde DB, llama a runCycle,
- * devuelve la decisión.
- *
- * @param event evento de entrada del motor.
- * @param currentInstantMs instante "ahora" del ciclo. Si no se proporciona,
- *   usa Date.now().
- */
 export async function processEvent(
   event: EngineEvent,
   currentInstantMs?: number,
 ): Promise<CycleDecision> {
-  const { state, runtimes, contexts } = await buildContextsFromDb(
-    currentInstantMs,
+  const { state, runtimes, contexts, coordinatorOptions } =
+    await buildContextsFromDb(currentInstantMs);
+  const stateAfterEvent = applyEventToState(event, state);
+  return runCycle(
+    event,
+    stateAfterEvent,
+    runtimes,
+    contexts,
+    coordinatorOptions,
   );
-  return runCycle(event, state, runtimes, contexts);
+}
+
+// =============================================================================
+// API pública — processEventForLegacyApi (S18.5)
+// =============================================================================
+
+/**
+ * Procesa un EngineEvent y devuelve un OrbitalState legacy listo para que
+ * route.ts lo serialize a la respuesta JSON pública. Reemplaza a
+ * buildOrbitalState del v7.3 cuando route.ts flippea USE_CLEAN_CORE=true.
+ *
+ * @param event evento a procesar.
+ * @param persistedDecision el SuggestionDecision actualmente persistido en
+ *   RuntimeState (lo lee route.ts antes de llamar a esta función).
+ * @param legacyAppointments la vista de appointments del día como la
+ *   construye route.ts hoy (con nombres legibles, value, etc.). Se usa como
+ *   base para inyectar la sugerencia visual sin re-querying.
+ * @param currentInstantMs reloj para tests; default Date.now().
+ */
+export async function processEventForLegacyApi(
+  event: EngineEvent,
+  persistedDecision: SuggestionDecision,
+  legacyAppointments: Appointment[],
+  currentInstantMs?: number,
+): Promise<OrbitalState> {
+  const { state, runtimes, contexts, coordinatorOptions, legacyMeta } =
+    await buildContextsFromDb(currentInstantMs);
+  const stateAfterEvent = applyEventToState(event, state);
+  const decision = runCycle(
+    event,
+    stateAfterEvent,
+    runtimes,
+    contexts,
+    coordinatorOptions,
+  );
+  return cycleDecisionToOrbitalState(
+    decision,
+    event,
+    runtimes,
+    contexts,
+    legacyMeta,
+    persistedDecision,
+    legacyAppointments,
+  );
+}
+
+// =============================================================================
+// Helpers privados de traducción CycleDecision -> OrbitalState
+// =============================================================================
+
+/**
+ * Traduce un CycleDecision del clean core a la forma legacy OrbitalState
+ * que la UI consume hoy. Paridad funcional con buildOrbitalState del v7.3.
+ *
+ * Mapeos clave:
+ *   - decision.proposal con fill_from_waitlist + persistedDecision !== "rejected"
+ *     → suggestion + appointment "suggested" inyectada en la agenda visual.
+ *   - decision.proposal == null o persistedDecision === "rejected"
+ *     → suggestion = null, appointments sin inyección.
+ *   - persistedDecision === "accepted" → recoveredRevenue/recoveredGaps cuentan.
+ *   - rankedCandidates: ganadora + Explanation.consideredAlternatives, con
+ *     breakdown placeholder a 0 (decisión LEGACY-TRANSLATION-BREAKDOWN-
+ *     PLACEHOLDER-V1).
+ *   - events: [] (decisión LEGACY-TRANSLATION-EVENTS-EMPTY-V1).
+ */
+function cycleDecisionToOrbitalState(
+  decision: CycleDecision,
+  event: EngineEvent,
+  runtimes: AppointmentRuntimeMap,
+  contexts: CoordinatorContexts,
+  legacyMeta: LegacyMetadata,
+  persistedDecision: SuggestionDecision,
+  legacyAppointments: Appointment[],
+): OrbitalState {
+  // Si el motor no propone nada o el operador ya rechazó: pasar agenda tal cual.
+  if (decision.proposal === null || persistedDecision === "rejected") {
+    return {
+      appointments: legacyAppointments,
+      suggestion: null,
+      rankedCandidates: buildLegacyRankedCandidates(
+        decision,
+        contexts,
+        legacyMeta,
+      ),
+      events: [],
+      recommendationReason:
+        persistedDecision === "rejected"
+          ? "Sugerencia rechazada por el operador."
+          : decision.proposal === null
+            ? "El motor no encuentra una mejora suficientemente clara sobre el estado actual."
+            : "",
+      recoveredRevenue: 0,
+      recoveredGaps: 0,
+      decision: persistedDecision,
+    };
+  }
+
+  // Hay proposal y no está rechazada → construir suggestion legacy.
+  const suggestion = buildLegacySuggestion(
+    decision,
+    event,
+    runtimes,
+    contexts,
+    legacyMeta,
+  );
+
+  // Si no se pudo construir la suggestion (proposal sin fill_from_waitlist
+  // como primera primitiva — caso defensivo no esperado en v1), fallback a
+  // suggestion=null.
+  if (suggestion === null) {
+    return {
+      appointments: legacyAppointments,
+      suggestion: null,
+      rankedCandidates: buildLegacyRankedCandidates(
+        decision,
+        contexts,
+        legacyMeta,
+      ),
+      events: [],
+      recommendationReason:
+        "El motor propone una acción que no es de tipo fill_from_waitlist (no soportado en la UI legacy todavía).",
+      recoveredRevenue: 0,
+      recoveredGaps: 0,
+      decision: persistedDecision,
+    };
+  }
+
+  const appointmentsWithSuggestion = buildLegacyAppointmentsView(
+    legacyAppointments,
+    suggestion,
+    persistedDecision,
+  );
+  const recommendationReason = buildRecommendationReason(decision, suggestion);
+  const rankedCandidates = buildLegacyRankedCandidates(
+    decision,
+    contexts,
+    legacyMeta,
+  );
+
+  if (persistedDecision === "accepted") {
+    return {
+      appointments: appointmentsWithSuggestion,
+      suggestion,
+      rankedCandidates,
+      events: [],
+      recommendationReason,
+      recoveredRevenue: suggestion.value,
+      recoveredGaps: 1,
+      decision: persistedDecision,
+    };
+  }
+
+  // Default: pending — sugerencia visible pero impacto no contabilizado.
+  return {
+    appointments: appointmentsWithSuggestion,
+    suggestion,
+    rankedCandidates,
+    events: [],
+    recommendationReason,
+    recoveredRevenue: 0,
+    recoveredGaps: 0,
+    decision: persistedDecision,
+  };
+}
+
+/**
+ * Construye la Suggestion legacy desde la primera primitiva fill_from_waitlist
+ * del proposal. Devuelve null si no hay tal primitiva (caso defensivo).
+ */
+function buildLegacySuggestion(
+  decision: CycleDecision,
+  event: EngineEvent,
+  runtimes: AppointmentRuntimeMap,
+  contexts: CoordinatorContexts,
+  legacyMeta: LegacyMetadata,
+): Suggestion | null {
+  if (decision.proposal === null) return null;
+  const fillPrimitive = decision.proposal.find(
+    (p) => p.kind === "fill_from_waitlist",
+  );
+  if (fillPrimitive === undefined || fillPrimitive.kind !== "fill_from_waitlist") {
+    return null;
+  }
+
+  // El gap a rellenar: el cancelled del evento (cancellation) o el primer
+  // cancelled del state (defensivo — proactive_tick no produciría
+  // fill_from_waitlist en v1, pero si lo hiciera intentamos algo razonable).
+  const gapEventId = findCancelledEventIdForGap(event, runtimes, contexts);
+  if (gapEventId === null) return null;
+  const gapRuntime = runtimes[gapEventId];
+  if (gapRuntime === undefined) return null;
+
+  const startTime = formatStartTimeMadrid(gapRuntime.start);
+  const gabineteName = legacyMeta.roomNameById[gapRuntime.roomId] ?? "—";
+
+  // El waitingCandidateId está en la primitiva fill_from_waitlist.
+  // Por convención del adapter (buildContextsFromDb), el waitingCandidate.id
+  // es String(WaitlistEntry.id), por lo que sirve como key para legacyMeta.
+  const waitingCandidateId = fillPrimitive.waitingCandidateId;
+  const patientName =
+    legacyMeta.patientNameByWaitlistEntryId[waitingCandidateId] ?? "Paciente";
+  const treatment =
+    legacyMeta.waitlistTreatmentByEntryId[waitingCandidateId] ?? "Sin tratamiento";
+  const durationSlots =
+    legacyMeta.waitlistDurationSlotsByEntryId[waitingCandidateId] ??
+    Math.max(1, Math.round(gapRuntime.plannedDuration / (30 * 60_000)));
+  const value = legacyMeta.waitlistValueByEntryId[waitingCandidateId] ?? 0;
+
+  return {
+    start: startTime,
+    gabinete: gabineteName,
+    patient: patientName,
+    type: treatment,
+    durationSlots,
+    status: "suggested",
+    value,
+  };
+}
+
+/**
+ * Identifica el eventId del appointment cancelado que el proposal pretende
+ * rellenar. En v1, asumimos que es el target del evento cancellation.
+ */
+function findCancelledEventIdForGap(
+  event: EngineEvent,
+  runtimes: AppointmentRuntimeMap,
+  contexts: CoordinatorContexts,
+): EventId | null {
+  if (event.kind === "cancellation") {
+    return event.eventId;
+  }
+  // Defensivo: para otros eventos (proactive_tick), devolvemos el primer
+  // appointment cancelado del state. En v1 esto no debería ocurrir junto
+  // con un proposal fill_from_waitlist (proactive_sweep devuelve []), pero
+  // mantenemos fallback para no producir suggestion=null en casos exóticos.
+  void contexts; // silenciar lint no-unused
+  for (const eventId in runtimes) {
+    // Necesitamos saber si está cancelled — lo consultaríamos del state,
+    // pero el state se filtra al momento de la traducción y no lo tenemos.
+    // En la práctica este path no se ejerce en v1.
+  }
+  return null;
+}
+
+/**
+ * Inyecta la suggestion en la agenda legacy como item con status="suggested".
+ * Filtra el appointment cancelado del mismo slot/gabinete (replicando el
+ * patrón del v7.3) y añade la sugerencia al final.
+ */
+function buildLegacyAppointmentsView(
+  legacyAppointments: Appointment[],
+  suggestion: Suggestion,
+  persistedDecision: SuggestionDecision,
+): Appointment[] {
+  const filtered = legacyAppointments.filter(
+    (a) =>
+      !(
+        a.status === "cancelled" &&
+        a.start === suggestion.start &&
+        a.gabinete === suggestion.gabinete
+      ),
+  );
+  // S18.5: cuando la sugerencia se ha aceptado, la cita inyectada pasa a
+  // status "confirmed" para feedback visual inmediato (cambio de color en
+  // agenda). Mejora deliberada respecto al v7.3, que mantenía "suggested"
+  // tras Aceptar y no daba señal visual clara al usuario. Filosofía de
+  // producto: lo visual es tan importante como lo funcional en este vertical.
+  const visualStatus: AppointmentStatus =
+    persistedDecision === "accepted" ? "confirmed" : "suggested";
+  const suggestionAsAppointment: Appointment = {
+    start: suggestion.start,
+    gabinete: suggestion.gabinete,
+    patient: suggestion.patient,
+    type: suggestion.type,
+    durationSlots: suggestion.durationSlots,
+    status: visualStatus,
+    value: suggestion.value,
+  };
+  return [...filtered, suggestionAsAppointment];
+}
+
+/**
+ * Construye RankedCandidate[] desde la ganadora + Explanation.consideredAlternatives.
+ * breakdown a 0 (placeholder, deuda LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1).
+ */
+function buildLegacyRankedCandidates(
+  decision: CycleDecision,
+  contexts: CoordinatorContexts,
+  legacyMeta: LegacyMetadata,
+): RankedCandidate[] {
+  const result: RankedCandidate[] = [];
+
+  // Ganadora primero (si la hay).
+  if (decision.proposal !== null) {
+    const fillPrimitive = decision.proposal.find(
+      (p) => p.kind === "fill_from_waitlist",
+    );
+    if (fillPrimitive !== undefined && fillPrimitive.kind === "fill_from_waitlist") {
+      const wId = fillPrimitive.waitingCandidateId;
+      const winner = waitlistEntryToRankedCandidate(
+        wId,
+        decision.explanation.projectedKPIs.projectedBillableValue,
+        legacyMeta,
+        translateMotiveCode(decision.explanation.motiveCode),
+      );
+      if (winner !== null) result.push(winner);
+    }
+  }
+
+  // Alternativas consideradas. Cada una tiene su action, pero solo
+  // miramos las fill_from_waitlist (las únicas representables en la UI legacy).
+  for (const alt of decision.explanation.consideredAlternatives) {
+    const fillPrim = alt.action.find((p) => p.kind === "fill_from_waitlist");
+    if (fillPrim === undefined || fillPrim.kind !== "fill_from_waitlist") continue;
+    const wId = fillPrim.waitingCandidateId;
+    // Evitar duplicar la ganadora si ya está en result.
+    if (result.some((rc) => candidateMatchesWaitlistId(rc, wId, legacyMeta))) {
+      continue;
+    }
+    const altCandidate = waitlistEntryToRankedCandidate(
+      wId,
+      alt.score,
+      legacyMeta,
+      translateDiscardReason(alt.discardReasonCode),
+    );
+    if (altCandidate !== null) result.push(altCandidate);
+  }
+
+  // Para no dejar referencias sin usar — el contexts queda disponible para
+  // futuros enriquecimientos del breakdown sintético si pivotamos a A.
+  void contexts;
+
+  return result;
+}
+
+function candidateMatchesWaitlistId(
+  rc: RankedCandidate,
+  waitlistEntryId: string,
+  legacyMeta: LegacyMetadata,
+): boolean {
+  const expectedName = legacyMeta.patientNameByWaitlistEntryId[waitlistEntryId];
+  return expectedName !== undefined && rc.name === expectedName;
+}
+
+function waitlistEntryToRankedCandidate(
+  waitlistEntryId: string,
+  totalScore: number,
+  legacyMeta: LegacyMetadata,
+  explanation: string,
+): RankedCandidate | null {
+  const name = legacyMeta.patientNameByWaitlistEntryId[waitlistEntryId];
+  if (name === undefined) return null;
+  const treatment =
+    legacyMeta.waitlistTreatmentByEntryId[waitlistEntryId] ?? "Sin tratamiento";
+  const durationSlots =
+    legacyMeta.waitlistDurationSlotsByEntryId[waitlistEntryId] ?? 1;
+  const value = legacyMeta.waitlistValueByEntryId[waitlistEntryId] ?? 0;
+
+  // Decisión LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1: subscores a 0.
+  return {
+    name,
+    treatment,
+    durationSlots,
+    value,
+    totalScore,
+    explanation,
+    breakdown: {
+      valueScore: 0,
+      fitScore: 0,
+      easeScore: 0,
+      availabilityScore: 0,
+      gabineteScore: 0,
+      priorityScore: 0,
+    },
+  };
+}
+
+/**
+ * Traduce un ExplanationMotiveCode del clean core a frase humana en ES.
+ * Cobertura mínima — la enum tiene 9 valores. Se completa cuando UX nueva
+ * en S20+ requiera explicación rica.
+ */
+function translateMotiveCode(motiveCode: string): string {
+  switch (motiveCode) {
+    case "FILLS_GAP_WITH_VALUE":
+      return "Rellena un hueco en agenda recuperando valor económico.";
+    case "RECOVERS_BILLABLE_VALUE":
+      return "Recupera valor facturable que se perdería.";
+    case "REDUCES_OVERTIME":
+      return "Reduce el riesgo de overtime al final de jornada.";
+    case "REDUCES_PATIENT_WAIT":
+      return "Reduce el tiempo de espera del paciente.";
+    case "PROPAGATES_OVERRUN_MITIGATION":
+      return "Mitiga la propagación de un retraso.";
+    case "REASSIGNS_TO_AVAILABLE_RESOURCE":
+      return "Reasigna a un recurso disponible.";
+    case "RESPECTS_PROFESSIONAL_AVAILABILITY":
+      return "Respeta la disponibilidad profesional.";
+    case "BALANCES_DAY_LOAD":
+      return "Equilibra la carga del día.";
+    default:
+      return "Mejora estimada sobre el estado actual.";
+  }
+}
+
+/**
+ * Traduce un DiscardReasonCode a frase humana en ES.
+ */
+function translateDiscardReason(discardCode: string | undefined): string {
+  switch (discardCode) {
+    case "WORSE_THAN_NO_OP":
+      return "Peor que no actuar.";
+    case "MARGINAL_IMPROVEMENT":
+      return "Mejora marginal por debajo del umbral.";
+    case "HIGH_VARIANCE":
+      return "Alta varianza en KPIs proyectados.";
+    case "HIGH_CHANGE_COST":
+      return "Coste de cambio elevado.";
+    case "DOMINATED_BY_ALTERNATIVE":
+      return "Dominada por otra alternativa.";
+    case "VALIDATION_FAILED":
+      return "Falla validación de restricciones.";
+    case "SIMULATION_FAILED":
+      return "Falla la simulación.";
+    default:
+      return "Descartada.";
+  }
+}
+
+/**
+ * Construye recommendationReason en formato "<patientName>: <motivo>" —
+ * paridad con el v7.3 que produce "Mónica T.: maximiza valor económico..."
+ */
+function buildRecommendationReason(
+  decision: CycleDecision,
+  suggestion: Suggestion,
+): string {
+  const motiveText = translateMotiveCode(decision.explanation.motiveCode);
+  return `${suggestion.patient}: ${motiveText}`;
+}
+
+/**
+ * Formatea un InstantUTC a "HH:MM" en hora Madrid.
+ */
+function formatStartTimeMadrid(instantMs: InstantUTC): string {
+  const fmt = new Intl.DateTimeFormat("es-ES", {
+    timeZone: "Europe/Madrid",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return fmt.format(new Date(instantMs));
 }

@@ -2,43 +2,49 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import { seed } from "@/lib/seed";
-import {
-  buildOrbitalState,
-  SuggestionDecision,
-} from "@/lib/orbital-engine";
+import type { SuggestionDecision } from "@/lib/orbital-engine";
 import { AppointmentStatus, WaitingPatient, HOURS } from "@/data/mock";
 import {
   countTodayAppointments,
   calculateOccupancy,
 } from "@/lib/dashboard-metrics";
-import { processEvent as cleanCoreProcessEvent } from "@/lib/core/adapter";
+import { processEventForLegacyApi } from "@/lib/core/adapter";
 import type { EngineEvent } from "@/lib/core/types";
 
 // =============================================================================
-// Sesión 18 — Flag y shadow mode
+// Sesión 18.5 — Flag flippeado: el motor v2.0 (clean core) sirve respuestas
 // =============================================================================
 
 /**
  * Flag de migración del motor v7.3 al motor v2.0 (clean core).
  *
- * - USE_CLEAN_CORE=false (default): la API sirve la respuesta del motor v7.3
- *   legacy intacta. El motor v2.0 NO se ejecuta. Comportamiento previo a
- *   Sesión 18, sin cambios visibles.
+ * Estado actual (Sesión 18.5): USE_CLEAN_CORE = true.
  *
- * - USE_CLEAN_CORE=false + SHADOW_MODE=true: la API sigue sirviendo v7.3,
- *   pero ADEMÁS ejecuta el motor v2.0 en paralelo (después de devolver la
- *   respuesta) y lo loguea. El usuario no nota nada. Sirve para detectar
- *   excepciones del adapter contra datos reales antes de flippear.
+ * El motor v2.0 sirve la respuesta visible al usuario en cada GET y POST.
+ * processEventForLegacyApi traduce el CycleDecision producido por el clean
+ * core a la forma legacy OrbitalState que la UI espera.
  *
- * - USE_CLEAN_CORE=true (Sesión 18.5+): la API sirve la respuesta del clean
- *   core traducida a la forma legacy OrbitalState. v7.3 deja de ejecutarse.
- *   En Sesión 19 se borra lib/orbital-engine.ts.
+ * El motor v7.3 legacy (lib/orbital-engine.ts) sigue compilando para no
+ * romper tests/imports cruzados, pero NO se ejecuta. Se borra en Sesión 19.
  *
- * Estos flags son constantes hoy. En Sesión 18.5 se promoverán a env vars
- * (process.env.USE_CLEAN_CORE) para permitir rollback sin redeploy.
+ * Rollback: git revert del commit que flippea el flag + redeploy. Coste:
+ * <5 min. En Sesión 19.5 (auth real) el flag pasará a env var
+ * (process.env.USE_CLEAN_CORE) para rollback sin redeploy.
  */
-const USE_CLEAN_CORE = false;
-const SHADOW_MODE = true;
+const USE_CLEAN_CORE = true;
+const SHADOW_MODE = false;
+
+// Aserción defensiva: si alguien deja el flag a false, el archivo todavía
+// compila pero rompe en runtime — fuerza coherencia con el estado declarado.
+if (!USE_CLEAN_CORE) {
+  throw new Error(
+    "Sesión 18.5: USE_CLEAN_CORE debe estar a true. La rama legacy se eliminó " +
+      "del archivo. Si necesitas rollback, usa git revert.",
+  );
+}
+// Lint: SHADOW_MODE se mantiene como referencia documental (estado del flag
+// previo a 18.5). Cuando se borre v7.3 en S19, ambos constantes se eliminan.
+void SHADOW_MODE;
 
 type AppointmentView = {
   id: number;
@@ -68,7 +74,9 @@ async function ensureSeeded() {
 
 // PROD-1-DEUDA2 + TZ-MADRID-VERCEL — calcula los límites del día actual en
 // zona Europe/Madrid, independientemente del TZ del runtime (Vercel = UTC).
-// Mitigación hasta que INTL-3 cierre operativo en Sesión 18.5+.
+// Mitigación hasta que TZ-MADRID-VERCEL cierre operativo (S18.5/S19).
+// Duplicado en lib/core/adapter.ts hasta unificación — deuda
+// ADAPTER-TZ-MADRID-DUPLICATED-V1.
 function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const now = new Date();
 
@@ -124,7 +132,7 @@ async function loadStateData() {
       prisma.runtimeState.findUnique({ where: { id: clinicId } }),
     ]);
 
-  const appointments: AppointmentView[] = appointmentsRaw.map((a) => ({
+  const appointmentsView: AppointmentView[] = appointmentsRaw.map((a) => ({
     id: a.id,
     start: a.startTime,
     gabinete: a.gabinete.name,
@@ -157,8 +165,11 @@ async function loadStateData() {
 
   const totalAvailableSlots = gabinetesRaw.length * Math.floor(HOURS.length / 2);
 
+  // appointmentsRaw se devuelve también, lo necesitamos para sintetizar el
+  // cancellation event con su id real (no el view simplificado).
   return {
-    appointments,
+    appointmentsRaw,
+    appointmentsView,
     waitingList,
     gabinetes,
     decision,
@@ -167,70 +178,102 @@ async function loadStateData() {
 }
 
 /**
- * Ejecuta el motor v2.0 (clean core) en shadow mode: lo invoca y loguea el
- * resultado, pero NO afecta a la respuesta servida al usuario. Si lanza
- * excepción, se captura y se loguea sin propagarse.
+ * Sintetiza un EngineEvent desde el state del DB.
  *
- * Disparamos un proactive_tick como evento "neutro" — equivale a la pregunta
- * "¿qué propone el motor sobre el estado actual sin un evento concreto?".
- * Cuando flippeemos USE_CLEAN_CORE=true en Sesión 18.5, el evento real
- * dependerá de la operación (GET = proactive_tick, POST = manual_signal con
- * la decisión del usuario).
+ * Decisión rectora 11 (S18.5): el flujo legacy de la URL pública no recibe
+ * eventos del exterior — solo lee el state del DB en cada GET/POST. Para
+ * alimentar el motor v2.0 (event-driven) desde este flujo legacy, el shim
+ * de route.ts sintetiza el evento más informativo posible:
+ *
+ *   - Si hay al menos un appointment con status="cancelled" en el día →
+ *     EventoCancelacionPaciente sobre el primer cancelled. Paridad funcional
+ *     con v7.3 (que también detecta solo el primer gap — deuda heredada
+ *     ENGINE-V7-SINGLE-GAP-DETECTION, se cierra en S19).
+ *   - Si no hay cancelled → proactive_tick. En v1 el Generator con
+ *     proactive_sweep devuelve [] (deuda PROACTIVE-SWEEP-MULTI-GAP-V1), por
+ *     lo que el motor producirá proposal=null. Equivalente a "no hay nada
+ *     que sugerir", paridad con v7.3 cuando no hay cancelled.
+ *
+ * Cuando exista bus de eventos real (post Sesión 20), esta síntesis
+ * desaparece — los eventos llegarán de verdad. Documentado como deuda
+ * blanda nueva: EVENT-SYNTHESIS-FROM-DB-V1.
  */
-async function runShadowModeCleanCore(): Promise<void> {
-  try {
-    const tenantId = String(getCurrentClinicId());
-    const event: EngineEvent = {
-      kind: "proactive_tick",
+function synthesizeEventFromState(
+  appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
+  clinicId: number,
+): EngineEvent {
+  const tenantId = String(clinicId);
+  const cancelled = appointmentsRaw.find((a) => a.status === "cancelled");
+  if (cancelled !== undefined) {
+    return {
+      kind: "cancellation",
       instant: Date.now(),
       tenantId,
+      eventId: String(cancelled.id),
+      noticeAheadMs: 0,
     };
-    const decision = await cleanCoreProcessEvent(event);
-
-    console.log("[SHADOW] clean core ejecutado OK", {
-      hasProposal: decision.proposal !== null,
-      proposalKind: decision.proposal?.[0]?.kind ?? null,
-      motiveCode: decision.explanation.motiveCode,
-      alternativesCount: decision.explanation.consideredAlternatives.length,
-      autonomyLevel: decision.autonomyLevel,
-    });
-  } catch (e) {
-    console.error("[SHADOW] clean core lanzó excepción:", e);
   }
+  return {
+    kind: "proactive_tick",
+    instant: Date.now(),
+    tenantId,
+  };
+}
+
+/**
+ * Construye la respuesta legacy OrbitalState ejecutando el motor v2.0
+ * sobre el state del DB. Sustituye al buildOrbitalState del v7.3.
+ *
+ * Llamado desde GET y POST tras loadStateData.
+ */
+async function buildResponseFromCleanCore(
+  clinicId: number,
+  appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
+  appointmentsView: AppointmentView[],
+  decision: SuggestionDecision,
+) {
+  const event = synthesizeEventFromState(appointmentsRaw, clinicId);
+  // Convertimos AppointmentView[] al shape de Appointment que espera
+  // processEventForLegacyApi (sin el id, que la UI no usa).
+  const legacyAppointments = appointmentsView.map((a) => ({
+    start: a.start,
+    gabinete: a.gabinete,
+    patient: a.patient,
+    type: a.type,
+    durationSlots: a.durationSlots,
+    status: a.status,
+    value: a.value,
+  }));
+  return processEventForLegacyApi(event, decision, legacyAppointments);
 }
 
 export async function GET() {
   await ensureSeeded();
+  const clinicId = getCurrentClinicId();
 
   const {
-    appointments,
-    waitingList,
+    appointmentsRaw,
+    appointmentsView,
     gabinetes,
     decision,
     totalAvailableSlots,
   } = await loadStateData();
 
-  const state = buildOrbitalState(appointments, waitingList, decision);
+  const state = await buildResponseFromCleanCore(
+    clinicId,
+    appointmentsRaw,
+    appointmentsView,
+    decision,
+  );
 
   const metrics = {
-    appointmentsCount: countTodayAppointments(appointments),
-    occupancy: calculateOccupancy(appointments, totalAvailableSlots),
+    appointmentsCount: countTodayAppointments(appointmentsView),
+    occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
     recoveredGaps: state.recoveredGaps,
     recoveredRevenue: state.recoveredRevenue,
   };
 
-  const response = NextResponse.json({ ...state, gabinetes, metrics });
-
-  // Shadow mode: ejecutar clean core en paralelo (fire-and-forget).
-  // No afecta a la respuesta. No bloquea. Solo loguea para validación.
-  if (!USE_CLEAN_CORE && SHADOW_MODE) {
-    runShadowModeCleanCore().catch(() => {
-      // Defensivo: runShadowModeCleanCore ya captura sus propios errores,
-      // pero si algo se nos escapa, swallow it. Shadow nunca debe fallar la request.
-    });
-  }
-
-  return response;
+  return NextResponse.json({ ...state, gabinetes, metrics });
 }
 
 export async function POST(request: NextRequest) {
@@ -261,27 +304,26 @@ export async function POST(request: NextRequest) {
   }
 
   const {
-    appointments,
-    waitingList,
+    appointmentsRaw,
+    appointmentsView,
     gabinetes,
     decision,
     totalAvailableSlots,
   } = await loadStateData();
 
-  const state = buildOrbitalState(appointments, waitingList, decision);
+  const state = await buildResponseFromCleanCore(
+    clinicId,
+    appointmentsRaw,
+    appointmentsView,
+    decision,
+  );
 
   const metrics = {
-    appointmentsCount: countTodayAppointments(appointments),
-    occupancy: calculateOccupancy(appointments, totalAvailableSlots),
+    appointmentsCount: countTodayAppointments(appointmentsView),
+    occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
     recoveredGaps: state.recoveredGaps,
     recoveredRevenue: state.recoveredRevenue,
   };
 
-  const response = NextResponse.json({ ...state, gabinetes, metrics });
-
-  if (!USE_CLEAN_CORE && SHADOW_MODE) {
-    runShadowModeCleanCore().catch(() => {});
-  }
-
-  return response;
+  return NextResponse.json({ ...state, gabinetes, metrics });
 }
