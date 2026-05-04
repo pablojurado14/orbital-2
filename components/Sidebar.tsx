@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { logoutAction } from "@/app/(app)/_actions/auth";
 
 type NavItem = {
   label: string;
@@ -17,7 +18,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Configuración", href: "/settings/gabinetes", matchPrefix: true },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ userEmail }: { userEmail: string | null }) {
   const pathname = usePathname();
 
   const isActive = (item: NavItem) => {
@@ -35,7 +36,8 @@ export default function Sidebar() {
         display: "flex",
         flexDirection: "column",
         gap: 24,
-        minHeight: "100vh",
+        height: "100%",
+        boxSizing: "border-box",
       }}
     >
       <div style={{ padding: "0 4px" }}>
@@ -108,8 +110,45 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div style={{ marginTop: "auto", fontSize: 10, color: "#475569", padding: "0 4px" }}>
-        v2.0 · clean core
+      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+        {userEmail !== null && (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.06)",
+              fontSize: 11,
+              color: "#94A3B8",
+              wordBreak: "break-all",
+            }}
+            title={userEmail}
+          >
+            {userEmail}
+          </div>
+        )}
+        <form action={logoutAction}>
+          <button
+            type="submit"
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 10,
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#FCA5A5",
+              background: "transparent",
+              border: "1px solid rgba(252,165,165,0.2)",
+              cursor: "pointer",
+              transition: "background 0.15s",
+            }}
+          >
+            Cerrar sesión
+          </button>
+        </form>
+        <div style={{ fontSize: 10, color: "#475569", padding: "0 4px", textAlign: "center" }}>
+          v2.0 · clean core
+        </div>
       </div>
     </aside>
   );
