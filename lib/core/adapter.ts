@@ -1,5 +1,5 @@
 /**
- * Adapter del clean core (Sesión 18 + Sesión 18.5).
+ * Adapter del clean core (Sesión 18 + 18.5 + 18.6).
  *
  * Pieza de unión entre Prisma (DB real) y el clean core (lib/core/).
  * Vive AQUÍ por convención (lib/core/) porque es agnóstica de UI/Next, pero
@@ -31,29 +31,28 @@
  *
  * Sesión 18.5 — cambios:
  *   - applyEventToState pre-aplica cancellation/no_show_detected al state.
- *     Cumple la decisión rectora COORDINATOR-STATE-IS-POST-EVENT-ASSUMPTION.
  *   - buildContextsFromDb lee ClinicSettings.umbralDisparoProactivo como
  *     improvementThreshold (decisión rectora 10).
- *   - buildContextsFromDb expone también legacyMeta con nombres legibles
- *     (procedure -> nombre TT, room -> nombre gabinete, waitlistEntry ->
- *     paciente). Necesario para traducir CycleDecision → OrbitalState legacy
- *     sin re-queries.
- *   - processEventForLegacyApi NUEVA: traduce CycleDecision a la forma
- *     legacy OrbitalState que la UI consume hoy. Reemplaza a buildOrbitalState
- *     del v7.3 cuando route.ts flippea el flag USE_CLEAN_CORE=true.
+ *   - buildContextsFromDb expone también legacyMeta con nombres legibles.
+ *   - processEventForLegacyApi traduce CycleDecision a OrbitalState legacy.
+ *   - cycleDecisionToOrbitalState pone status="confirmed" cuando
+ *     decision === "accepted" (mejora UX respecto al v7.3).
  *
- * Decisión rectora del helper de traducción (S18.5):
- *   - RankedCandidate.breakdown se rellena con todos los subscores a 0.
- *     Decisión consciente (opción B): la UI hoy probablemente no los
- *     desglosa visiblemente; si lo hace, refinaríamos en 5 min con valores
- *     sintetizados. Idea registrada como UX-EXPLAINABILITY-PROGRESSIVE-
- *     DISCLOSURE-V1 en IDEAS_FUTURAS_POST_TRACCIÓN.md (S20+).
- *   - OrbitalState.events queda vacío en v1. El timeline narrativo del v7.3
- *     no se reproduce — Sesión 19+ con UX nueva.
- *   - recoveredRevenue/recoveredGaps replican la semántica del v7.3:
- *     contabilizan solo si decision === "accepted".
+ * Sesión 18.6 — cambios:
+ *   - Nueva 8ª query a RejectedCandidate en buildContextsFromDb.
+ *   - filterWaitlistByRejectedCandidates excluye candidatas rechazadas para
+ *     el gapEventId actual antes de pasar al Coordinator.
+ *   - buildLegacySuggestion rellena los campos nuevos suggestion.gapEventId
+ *     y suggestion.waitingCandidateId (decisión rectora 11) para que la UI
+ *     pueda referenciarlos al rechazar candidata específica.
  *
- * Deudas blandas registradas:
+ * Decisiones rectoras nuevas (S18.6):
+ *   - 11: el gap se identifica por Appointment.id stringificado.
+ *   - 12: §7.3 (no tocar lib/orbital-engine.ts) relajada porque el v7.3 ya
+ *     no sirve respuestas tras flag flippeado en S18.5. Tipos compartidos
+ *     se pueden extender; lógica del v7.3 sigue intocable hasta S19.
+ *
+ * Deudas blandas registradas (vigentes):
  *   - ADAPTER-OVERRUN-PROBABILITY-V1
  *   - ADAPTER-EQUIPMENT-RESERVATIONS-V1
  *   - ADAPTER-PROCEDURE-MAPPING-FALLBACK-V1
@@ -61,10 +60,9 @@
  *   - ADAPTER-WORKDAY-CONSTRAINTS-V1
  *   - ADAPTER-TZ-MADRID-DUPLICATED-V1
  *   - CLINIC-SETTINGS-FIELD-NAMING-V1
- *   - LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1 (S18.5): RankedCandidate
- *     .breakdown a 0. Cierre cuando UI nueva consuma Explanation directo.
- *   - LEGACY-TRANSLATION-EVENTS-EMPTY-V1 (S18.5): OrbitalState.events vacío.
- *     Cierre con UX nueva (S20+).
+ *   - LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1 (S18.5)
+ *   - LEGACY-TRANSLATION-EVENTS-EMPTY-V1 (S18.5)
+ *   - REJECTED-CANDIDATE-HOUSEKEEPING-NOT-IN-ADAPTER-V1 (S18.6)
  */
 
 import type {
@@ -139,29 +137,19 @@ const UNKNOWN_PROCEDURE_ID = "unknown";
 const ADAPTER_DEFAULT_IMPROVEMENT_THRESHOLD = 0.001;
 
 // =============================================================================
-// Tipos privados — metadatos para traducción legacy
+// Tipos privados
 // =============================================================================
 
-/**
- * Bolsa de metadatos legibles que el helper de traducción necesita para
- * producir OrbitalState con strings humanos en lugar de IDs opacos.
- * Construido en buildContextsFromDb a partir de las queries ya hechas
- * (sin re-querying).
- */
 interface LegacyMetadata {
-  /** procedureId (string) -> nombre TreatmentType (ej: "1" -> "Limpieza"). */
   readonly procedureNameById: Readonly<Record<ResourceId, string>>;
-  /** roomId (string) -> nombre Gabinete (ej: "1" -> "Gabinete A"). */
   readonly roomNameById: Readonly<Record<ResourceId, string>>;
-  /** waitlistEntryId (string) -> nombre paciente (ej: "3" -> "Mónica T."). */
   readonly patientNameByWaitlistEntryId: Readonly<Record<string, string>>;
-  /** waitlistEntryId (string) -> tratamiento deseado (display name). */
   readonly waitlistTreatmentByEntryId: Readonly<Record<string, string>>;
-  /** waitlistEntryId (string) -> durationSlots de 30 min. */
   readonly waitlistDurationSlotsByEntryId: Readonly<Record<string, number>>;
-  /** waitlistEntryId (string) -> value en € . */
   readonly waitlistValueByEntryId: Readonly<Record<string, number>>;
 }
+
+type RejectedByGap = Readonly<Record<string, ReadonlySet<string>>>;
 
 // =============================================================================
 // Helpers de timezone
@@ -292,6 +280,42 @@ function markAppointmentRuntimeStatus(
 }
 
 // =============================================================================
+// Filtrado de waitlist por candidatas rechazadas (S18.6)
+// =============================================================================
+
+function filterWaitlistByRejectedCandidates(
+  contexts: CoordinatorContexts,
+  rejectedByGap: RejectedByGap,
+  gapEventId: string | null,
+): CoordinatorContexts {
+  if (gapEventId === null) return contexts;
+  const rejectedSet = rejectedByGap[gapEventId];
+  if (rejectedSet === undefined || rejectedSet.size === 0) return contexts;
+
+  const filteredCandidates = contexts.generation.waitlist.candidates.filter(
+    (c) => !rejectedSet.has(c.id),
+  );
+  if (filteredCandidates.length === contexts.generation.waitlist.candidates.length) {
+    return contexts;
+  }
+
+  return {
+    ...contexts,
+    generation: {
+      ...contexts.generation,
+      waitlist: { candidates: filteredCandidates },
+    },
+  };
+}
+
+function extractGapEventId(event: EngineEvent): string | null {
+  if (event.kind === "cancellation") {
+    return event.eventId;
+  }
+  return null;
+}
+
+// =============================================================================
 // API pública — buildContextsFromDb
 // =============================================================================
 
@@ -303,6 +327,26 @@ export async function buildContextsFromDb(
   contexts: CoordinatorContexts;
   coordinatorOptions: CoordinatorOptions;
   legacyMeta: LegacyMetadata;
+}> {
+  const result = await buildContextsFromDbInternal(currentInstantMs);
+  return {
+    state: result.state,
+    runtimes: result.runtimes,
+    contexts: result.contexts,
+    coordinatorOptions: result.coordinatorOptions,
+    legacyMeta: result.legacyMeta,
+  };
+}
+
+async function buildContextsFromDbInternal(
+  currentInstantMs?: number,
+): Promise<{
+  state: DayState;
+  runtimes: AppointmentRuntimeMap;
+  contexts: CoordinatorContexts;
+  coordinatorOptions: CoordinatorOptions;
+  legacyMeta: LegacyMetadata;
+  rejectedByGap: RejectedByGap;
 }> {
   const clinicId = getCurrentClinicId();
   const now = currentInstantMs !== undefined ? new Date(currentInstantMs) : new Date();
@@ -317,6 +361,7 @@ export async function buildContextsFromDb(
     proceduresWithActivationsRaw,
     waitlistRaw,
     clinicSettingsRaw,
+    rejectedCandidatesRaw,
   ] = await Promise.all([
     prisma.appointment.findMany({
       where: { clinicId, date: { gte: todayStart, lt: todayEnd } },
@@ -354,16 +399,25 @@ export async function buildContextsFromDb(
       where: { id: clinicId },
       select: { umbralDisparoProactivo: true },
     }),
+    prisma.rejectedCandidate.findMany({
+      where: { clinicId },
+      select: { gapEventId: true, waitingCandidateId: true },
+    }),
   ]);
 
-  // --- Resolver Procedure por code ---
+  const rejectedByGapMutable: Record<string, Set<string>> = {};
+  for (const r of rejectedCandidatesRaw) {
+    if (rejectedByGapMutable[r.gapEventId] === undefined) {
+      rejectedByGapMutable[r.gapEventId] = new Set();
+    }
+    rejectedByGapMutable[r.gapEventId].add(r.waitingCandidateId);
+  }
+  const rejectedByGap: RejectedByGap = rejectedByGapMutable;
+
   const procedureIdByCode: Record<string, number> = {};
   const procedureRequirementsById: Record<ResourceId, ProcedureRequirements> = {};
   const distributionsByProcedureId: Record<ResourceId, ProcedureDistributions> = {};
   const priceByProcedureId: Record<ResourceId, number> = {};
-  // Para legacyMeta: procedureId -> nombre TT amigable
-  // (no el code D0150 sino el nombre humano "Revisión").
-  // Usamos el inverso del TT_TO_PROCEDURE_CODE.
   const ttNameByProcedureCode: Record<string, string> = {};
   for (const [ttName, procCode] of Object.entries(TT_TO_PROCEDURE_CODE)) {
     if (!(procCode in ttNameByProcedureCode)) {
@@ -431,7 +485,6 @@ export async function buildContextsFromDb(
     };
   });
 
-  // Para legacyMeta: roomId -> nombre Gabinete.
   const roomNameById: Record<ResourceId, string> = {};
   for (const g of gabinetesRaw) {
     roomNameById[String(g.id)] = g.name;
@@ -569,7 +622,6 @@ export async function buildContextsFromDb(
     currentProjectedKPIs: emptyKPIs,
   };
 
-  // --- waitingCandidates + legacyMeta de waitlist ---
   const patientNameByWaitlistEntryId: Record<string, string> = {};
   const waitlistTreatmentByEntryId: Record<string, string> = {};
   const waitlistDurationSlotsByEntryId: Record<string, number> = {};
@@ -587,11 +639,8 @@ export async function buildContextsFromDb(
       }
     }
 
-    // legacyMeta de waitlist
     const wIdStr = String(w.id);
     patientNameByWaitlistEntryId[wIdStr] = w.patient.name;
-    // Preferimos el nombre del Procedure si está mapeado, si no caemos al
-    // desiredTreatmentType.name (legacy).
     let treatmentDisplay = "Sin tratamiento";
     if (procedureIdStr !== undefined && procedureIdStr in procedureNameById) {
       treatmentDisplay = procedureNameById[procedureIdStr];
@@ -674,7 +723,14 @@ export async function buildContextsFromDb(
     waitlistValueByEntryId,
   };
 
-  return { state, runtimes, contexts, coordinatorOptions, legacyMeta };
+  return {
+    state,
+    runtimes,
+    contexts,
+    coordinatorOptions,
+    legacyMeta,
+    rejectedByGap,
+  };
 }
 
 // =============================================================================
@@ -685,56 +741,53 @@ export async function processEvent(
   event: EngineEvent,
   currentInstantMs?: number,
 ): Promise<CycleDecision> {
-  const { state, runtimes, contexts, coordinatorOptions } =
-    await buildContextsFromDb(currentInstantMs);
+  const { state, runtimes, contexts, coordinatorOptions, rejectedByGap } =
+    await buildContextsFromDbInternal(currentInstantMs);
   const stateAfterEvent = applyEventToState(event, state);
+  const filteredContexts = filterWaitlistByRejectedCandidates(
+    contexts,
+    rejectedByGap,
+    extractGapEventId(event),
+  );
   return runCycle(
     event,
     stateAfterEvent,
     runtimes,
-    contexts,
+    filteredContexts,
     coordinatorOptions,
   );
 }
 
 // =============================================================================
-// API pública — processEventForLegacyApi (S18.5)
+// API pública — processEventForLegacyApi
 // =============================================================================
 
-/**
- * Procesa un EngineEvent y devuelve un OrbitalState legacy listo para que
- * route.ts lo serialize a la respuesta JSON pública. Reemplaza a
- * buildOrbitalState del v7.3 cuando route.ts flippea USE_CLEAN_CORE=true.
- *
- * @param event evento a procesar.
- * @param persistedDecision el SuggestionDecision actualmente persistido en
- *   RuntimeState (lo lee route.ts antes de llamar a esta función).
- * @param legacyAppointments la vista de appointments del día como la
- *   construye route.ts hoy (con nombres legibles, value, etc.). Se usa como
- *   base para inyectar la sugerencia visual sin re-querying.
- * @param currentInstantMs reloj para tests; default Date.now().
- */
 export async function processEventForLegacyApi(
   event: EngineEvent,
   persistedDecision: SuggestionDecision,
   legacyAppointments: Appointment[],
   currentInstantMs?: number,
 ): Promise<OrbitalState> {
-  const { state, runtimes, contexts, coordinatorOptions, legacyMeta } =
-    await buildContextsFromDb(currentInstantMs);
+  const { state, runtimes, contexts, coordinatorOptions, legacyMeta, rejectedByGap } =
+    await buildContextsFromDbInternal(currentInstantMs);
   const stateAfterEvent = applyEventToState(event, state);
+  const filteredContexts = filterWaitlistByRejectedCandidates(
+    contexts,
+    rejectedByGap,
+    extractGapEventId(event),
+  );
   const decision = runCycle(
     event,
     stateAfterEvent,
     runtimes,
-    contexts,
+    filteredContexts,
     coordinatorOptions,
   );
   return cycleDecisionToOrbitalState(
     decision,
     event,
     runtimes,
-    contexts,
+    filteredContexts,
     legacyMeta,
     persistedDecision,
     legacyAppointments,
@@ -745,21 +798,6 @@ export async function processEventForLegacyApi(
 // Helpers privados de traducción CycleDecision -> OrbitalState
 // =============================================================================
 
-/**
- * Traduce un CycleDecision del clean core a la forma legacy OrbitalState
- * que la UI consume hoy. Paridad funcional con buildOrbitalState del v7.3.
- *
- * Mapeos clave:
- *   - decision.proposal con fill_from_waitlist + persistedDecision !== "rejected"
- *     → suggestion + appointment "suggested" inyectada en la agenda visual.
- *   - decision.proposal == null o persistedDecision === "rejected"
- *     → suggestion = null, appointments sin inyección.
- *   - persistedDecision === "accepted" → recoveredRevenue/recoveredGaps cuentan.
- *   - rankedCandidates: ganadora + Explanation.consideredAlternatives, con
- *     breakdown placeholder a 0 (decisión LEGACY-TRANSLATION-BREAKDOWN-
- *     PLACEHOLDER-V1).
- *   - events: [] (decisión LEGACY-TRANSLATION-EVENTS-EMPTY-V1).
- */
 function cycleDecisionToOrbitalState(
   decision: CycleDecision,
   event: EngineEvent,
@@ -769,7 +807,6 @@ function cycleDecisionToOrbitalState(
   persistedDecision: SuggestionDecision,
   legacyAppointments: Appointment[],
 ): OrbitalState {
-  // Si el motor no propone nada o el operador ya rechazó: pasar agenda tal cual.
   if (decision.proposal === null || persistedDecision === "rejected") {
     return {
       appointments: legacyAppointments,
@@ -792,7 +829,6 @@ function cycleDecisionToOrbitalState(
     };
   }
 
-  // Hay proposal y no está rechazada → construir suggestion legacy.
   const suggestion = buildLegacySuggestion(
     decision,
     event,
@@ -801,9 +837,6 @@ function cycleDecisionToOrbitalState(
     legacyMeta,
   );
 
-  // Si no se pudo construir la suggestion (proposal sin fill_from_waitlist
-  // como primera primitiva — caso defensivo no esperado en v1), fallback a
-  // suggestion=null.
   if (suggestion === null) {
     return {
       appointments: legacyAppointments,
@@ -847,7 +880,6 @@ function cycleDecisionToOrbitalState(
     };
   }
 
-  // Default: pending — sugerencia visible pero impacto no contabilizado.
   return {
     appointments: appointmentsWithSuggestion,
     suggestion,
@@ -860,10 +892,6 @@ function cycleDecisionToOrbitalState(
   };
 }
 
-/**
- * Construye la Suggestion legacy desde la primera primitiva fill_from_waitlist
- * del proposal. Devuelve null si no hay tal primitiva (caso defensivo).
- */
 function buildLegacySuggestion(
   decision: CycleDecision,
   event: EngineEvent,
@@ -879,9 +907,6 @@ function buildLegacySuggestion(
     return null;
   }
 
-  // El gap a rellenar: el cancelled del evento (cancellation) o el primer
-  // cancelled del state (defensivo — proactive_tick no produciría
-  // fill_from_waitlist en v1, pero si lo hiciera intentamos algo razonable).
   const gapEventId = findCancelledEventIdForGap(event, runtimes, contexts);
   if (gapEventId === null) return null;
   const gapRuntime = runtimes[gapEventId];
@@ -890,9 +915,6 @@ function buildLegacySuggestion(
   const startTime = formatStartTimeMadrid(gapRuntime.start);
   const gabineteName = legacyMeta.roomNameById[gapRuntime.roomId] ?? "—";
 
-  // El waitingCandidateId está en la primitiva fill_from_waitlist.
-  // Por convención del adapter (buildContextsFromDb), el waitingCandidate.id
-  // es String(WaitlistEntry.id), por lo que sirve como key para legacyMeta.
   const waitingCandidateId = fillPrimitive.waitingCandidateId;
   const patientName =
     legacyMeta.patientNameByWaitlistEntryId[waitingCandidateId] ?? "Paciente";
@@ -911,13 +933,13 @@ function buildLegacySuggestion(
     durationSlots,
     status: "suggested",
     value,
+    // S18.6: IDs opacos para que la UI pueda hacer reject_candidate sobre
+    // este par específico (gap, candidato).
+    gapEventId,
+    waitingCandidateId,
   };
 }
 
-/**
- * Identifica el eventId del appointment cancelado que el proposal pretende
- * rellenar. En v1, asumimos que es el target del evento cancellation.
- */
 function findCancelledEventIdForGap(
   event: EngineEvent,
   runtimes: AppointmentRuntimeMap,
@@ -926,24 +948,11 @@ function findCancelledEventIdForGap(
   if (event.kind === "cancellation") {
     return event.eventId;
   }
-  // Defensivo: para otros eventos (proactive_tick), devolvemos el primer
-  // appointment cancelado del state. En v1 esto no debería ocurrir junto
-  // con un proposal fill_from_waitlist (proactive_sweep devuelve []), pero
-  // mantenemos fallback para no producir suggestion=null en casos exóticos.
-  void contexts; // silenciar lint no-unused
-  for (const eventId in runtimes) {
-    // Necesitamos saber si está cancelled — lo consultaríamos del state,
-    // pero el state se filtra al momento de la traducción y no lo tenemos.
-    // En la práctica este path no se ejerce en v1.
-  }
+  void contexts;
+  void runtimes;
   return null;
 }
 
-/**
- * Inyecta la suggestion en la agenda legacy como item con status="suggested".
- * Filtra el appointment cancelado del mismo slot/gabinete (replicando el
- * patrón del v7.3) y añade la sugerencia al final.
- */
 function buildLegacyAppointmentsView(
   legacyAppointments: Appointment[],
   suggestion: Suggestion,
@@ -976,10 +985,6 @@ function buildLegacyAppointmentsView(
   return [...filtered, suggestionAsAppointment];
 }
 
-/**
- * Construye RankedCandidate[] desde la ganadora + Explanation.consideredAlternatives.
- * breakdown a 0 (placeholder, deuda LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1).
- */
 function buildLegacyRankedCandidates(
   decision: CycleDecision,
   contexts: CoordinatorContexts,
@@ -987,7 +992,6 @@ function buildLegacyRankedCandidates(
 ): RankedCandidate[] {
   const result: RankedCandidate[] = [];
 
-  // Ganadora primero (si la hay).
   if (decision.proposal !== null) {
     const fillPrimitive = decision.proposal.find(
       (p) => p.kind === "fill_from_waitlist",
@@ -1004,13 +1008,10 @@ function buildLegacyRankedCandidates(
     }
   }
 
-  // Alternativas consideradas. Cada una tiene su action, pero solo
-  // miramos las fill_from_waitlist (las únicas representables en la UI legacy).
   for (const alt of decision.explanation.consideredAlternatives) {
     const fillPrim = alt.action.find((p) => p.kind === "fill_from_waitlist");
     if (fillPrim === undefined || fillPrim.kind !== "fill_from_waitlist") continue;
     const wId = fillPrim.waitingCandidateId;
-    // Evitar duplicar la ganadora si ya está en result.
     if (result.some((rc) => candidateMatchesWaitlistId(rc, wId, legacyMeta))) {
       continue;
     }
@@ -1023,8 +1024,6 @@ function buildLegacyRankedCandidates(
     if (altCandidate !== null) result.push(altCandidate);
   }
 
-  // Para no dejar referencias sin usar — el contexts queda disponible para
-  // futuros enriquecimientos del breakdown sintético si pivotamos a A.
   void contexts;
 
   return result;
@@ -1053,7 +1052,6 @@ function waitlistEntryToRankedCandidate(
     legacyMeta.waitlistDurationSlotsByEntryId[waitlistEntryId] ?? 1;
   const value = legacyMeta.waitlistValueByEntryId[waitlistEntryId] ?? 0;
 
-  // Decisión LEGACY-TRANSLATION-BREAKDOWN-PLACEHOLDER-V1: subscores a 0.
   return {
     name,
     treatment,
@@ -1072,11 +1070,6 @@ function waitlistEntryToRankedCandidate(
   };
 }
 
-/**
- * Traduce un ExplanationMotiveCode del clean core a frase humana en ES.
- * Cobertura mínima — la enum tiene 9 valores. Se completa cuando UX nueva
- * en S20+ requiera explicación rica.
- */
 function translateMotiveCode(motiveCode: string): string {
   switch (motiveCode) {
     case "FILLS_GAP_WITH_VALUE":
@@ -1100,9 +1093,6 @@ function translateMotiveCode(motiveCode: string): string {
   }
 }
 
-/**
- * Traduce un DiscardReasonCode a frase humana en ES.
- */
 function translateDiscardReason(discardCode: string | undefined): string {
   switch (discardCode) {
     case "WORSE_THAN_NO_OP":
@@ -1124,10 +1114,6 @@ function translateDiscardReason(discardCode: string | undefined): string {
   }
 }
 
-/**
- * Construye recommendationReason en formato "<patientName>: <motivo>" —
- * paridad con el v7.3 que produce "Mónica T.: maximiza valor económico..."
- */
 function buildRecommendationReason(
   decision: CycleDecision,
   suggestion: Suggestion,
@@ -1136,9 +1122,6 @@ function buildRecommendationReason(
   return `${suggestion.patient}: ${motiveText}`;
 }
 
-/**
- * Formatea un InstantUTC a "HH:MM" en hora Madrid.
- */
 function formatStartTimeMadrid(instantMs: InstantUTC): string {
   const fmt = new Intl.DateTimeFormat("es-ES", {
     timeZone: "Europe/Madrid",

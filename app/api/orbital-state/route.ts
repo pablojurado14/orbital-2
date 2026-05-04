@@ -13,37 +13,27 @@ import type { EngineEvent } from "@/lib/core/types";
 
 // =============================================================================
 // Sesión 18.5 — Flag flippeado: el motor v2.0 (clean core) sirve respuestas
+// Sesión 18.6 — Iteración de candidatas vía RejectedCandidate
 // =============================================================================
 
 /**
  * Flag de migración del motor v7.3 al motor v2.0 (clean core).
  *
- * Estado actual (Sesión 18.5): USE_CLEAN_CORE = true.
+ * Estado actual (Sesión 18.5+): USE_CLEAN_CORE = true. El motor v2.0 sirve
+ * la respuesta visible al usuario en cada GET y POST.
  *
- * El motor v2.0 sirve la respuesta visible al usuario en cada GET y POST.
- * processEventForLegacyApi traduce el CycleDecision producido por el clean
- * core a la forma legacy OrbitalState que la UI espera.
- *
- * El motor v7.3 legacy (lib/orbital-engine.ts) sigue compilando para no
- * romper tests/imports cruzados, pero NO se ejecuta. Se borra en Sesión 19.
- *
- * Rollback: git revert del commit que flippea el flag + redeploy. Coste:
- * <5 min. En Sesión 19.5 (auth real) el flag pasará a env var
- * (process.env.USE_CLEAN_CORE) para rollback sin redeploy.
+ * Rollback: git revert + redeploy. En Sesión 19.5 (auth real) el flag pasa
+ * a env var (process.env.USE_CLEAN_CORE) para rollback sin redeploy.
  */
 const USE_CLEAN_CORE = true;
 const SHADOW_MODE = false;
 
-// Aserción defensiva: si alguien deja el flag a false, el archivo todavía
-// compila pero rompe en runtime — fuerza coherencia con el estado declarado.
 if (!USE_CLEAN_CORE) {
   throw new Error(
     "Sesión 18.5: USE_CLEAN_CORE debe estar a true. La rama legacy se eliminó " +
       "del archivo. Si necesitas rollback, usa git revert.",
   );
 }
-// Lint: SHADOW_MODE se mantiene como referencia documental (estado del flag
-// previo a 18.5). Cuando se borre v7.3 en S19, ambos constantes se eliminan.
 void SHADOW_MODE;
 
 type AppointmentView = {
@@ -56,21 +46,6 @@ type AppointmentView = {
   status: AppointmentStatus;
   value: number;
 };
-
-async function ensureSeeded() {
-  const clinicId = getCurrentClinicId();
-  const clinic = await prisma.clinicSettings.findUnique({ where: { id: clinicId } });
-
-  if (!clinic) {
-    await seed();
-  }
-
-  await prisma.runtimeState.upsert({
-    where: { id: clinicId },
-    update: {},
-    create: { id: clinicId, suggestionDecision: "pending", clinicId },
-  });
-}
 
 // PROD-1-DEUDA2 + TZ-MADRID-VERCEL — calcula los límites del día actual en
 // zona Europe/Madrid, independientemente del TZ del runtime (Vercel = UTC).
@@ -96,6 +71,53 @@ function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
 
   return { today, tomorrow };
+}
+
+/**
+ * Housekeeping S18.6: purga RejectedCandidate de días anteriores al actual
+ * (medianoche Madrid). Idempotente, barato — la tabla tiene índice por
+ * (clinicId, rejectedAt). Se ejecuta en cada llamada de ensureSeeded, lo
+ * que en la práctica es cada GET/POST inicial pero no añade carga
+ * significativa porque las filas afectadas son pocas (<10 por día por
+ * clínica en uso típico).
+ *
+ * Decisión rectora 11 (S18.6): los rejected son válidos solo dentro del
+ * día operativo. Al cambiar de día, los huecos del día anterior dejan de
+ * existir como conceptos relevantes (el seed de mañana traerá appointments
+ * nuevos con IDs nuevos), por lo que las rejected del día previo dejan de
+ * tener semántica.
+ *
+ * Deuda blanda registrada: REJECTED-CANDIDATE-HOUSEKEEPING-NOT-IN-ADAPTER-V1
+ * — el housekeeping vive en route.ts. Si el adapter se invoca fuera del
+ * flujo de route.ts (smoke test, cron job futuro), puede leer rejected
+ * obsoletos. Mover a job programado o pieza compartida en S20+.
+ */
+async function purgeStaleRejectedCandidates(clinicId: number): Promise<void> {
+  const { today } = getMadridDayBoundaries();
+  await prisma.rejectedCandidate.deleteMany({
+    where: {
+      clinicId,
+      rejectedAt: { lt: today },
+    },
+  });
+}
+
+async function ensureSeeded() {
+  const clinicId = getCurrentClinicId();
+  const clinic = await prisma.clinicSettings.findUnique({ where: { id: clinicId } });
+
+  if (!clinic) {
+    await seed();
+  }
+
+  await prisma.runtimeState.upsert({
+    where: { id: clinicId },
+    update: {},
+    create: { id: clinicId, suggestionDecision: "pending", clinicId },
+  });
+
+  // S18.6: purgar rejected de días anteriores.
+  await purgeStaleRejectedCandidates(clinicId);
 }
 
 async function loadStateData() {
@@ -165,8 +187,6 @@ async function loadStateData() {
 
   const totalAvailableSlots = gabinetesRaw.length * Math.floor(HOURS.length / 2);
 
-  // appointmentsRaw se devuelve también, lo necesitamos para sintetizar el
-  // cancellation event con su id real (no el view simplificado).
   return {
     appointmentsRaw,
     appointmentsView,
@@ -196,7 +216,7 @@ async function loadStateData() {
  *
  * Cuando exista bus de eventos real (post Sesión 20), esta síntesis
  * desaparece — los eventos llegarán de verdad. Documentado como deuda
- * blanda nueva: EVENT-SYNTHESIS-FROM-DB-V1.
+ * blanda: EVENT-SYNTHESIS-FROM-DB-V1.
  */
 function synthesizeEventFromState(
   appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
@@ -220,12 +240,6 @@ function synthesizeEventFromState(
   };
 }
 
-/**
- * Construye la respuesta legacy OrbitalState ejecutando el motor v2.0
- * sobre el state del DB. Sustituye al buildOrbitalState del v7.3.
- *
- * Llamado desde GET y POST tras loadStateData.
- */
 async function buildResponseFromCleanCore(
   clinicId: number,
   appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
@@ -233,8 +247,6 @@ async function buildResponseFromCleanCore(
   decision: SuggestionDecision,
 ) {
   const event = synthesizeEventFromState(appointmentsRaw, clinicId);
-  // Convertimos AppointmentView[] al shape de Appointment que espera
-  // processEventForLegacyApi (sin el id, que la UI no usa).
   const legacyAppointments = appointmentsView.map((a) => ({
     start: a.start,
     gabinete: a.gabinete,
@@ -276,12 +288,37 @@ export async function GET() {
   return NextResponse.json({ ...state, gabinetes, metrics });
 }
 
+/**
+ * POST acepta múltiples acciones:
+ *
+ *   - { action: "accepted" | "rejected" | "pending" } → actualiza
+ *     RuntimeState.suggestionDecision. Comportamiento heredado del v7.3.
+ *
+ *   - { action: "reset" } → resetea suggestionDecision a "pending" Y purga
+ *     todas las RejectedCandidate del clinic (S18.6: el reset también borra
+ *     el historial de candidatas rechazadas, para que el motor pueda
+ *     reproponer desde cero).
+ *
+ *   - { action: "reject_candidate", gapEventId, waitingCandidateId } →
+ *     persiste el rechazo de UNA candidata específica para UN hueco
+ *     concreto. NO toca suggestionDecision (queda "pending" para que el
+ *     siguiente GET dispare el motor con el waitlist filtrado y proponga
+ *     la siguiente candidata top-1). Idempotente: si la candidata ya está
+ *     rechazada para ese gap, devuelve OK sin error.
+ *
+ *     Cuando se rechazan TODAS las candidatas viables del waitlist, el
+ *     motor producirá proposal=null en el siguiente GET → la UI mostrará
+ *     "Caso cerrado: ningún candidato aceptado".
+ */
 export async function POST(request: NextRequest) {
   await ensureSeeded();
   const clinicId = getCurrentClinicId();
 
   const body = await request.json();
-  const action = body?.action as SuggestionDecision | "reset";
+  const action = body?.action as
+    | SuggestionDecision
+    | "reset"
+    | "reject_candidate";
 
   if (action === "reset") {
     await prisma.runtimeState.upsert({
@@ -289,6 +326,39 @@ export async function POST(request: NextRequest) {
       update: { suggestionDecision: "pending" },
       create: { id: clinicId, suggestionDecision: "pending", clinicId },
     });
+    // S18.6: reset también limpia historial de rejected.
+    await prisma.rejectedCandidate.deleteMany({ where: { clinicId } });
+  } else if (action === "reject_candidate") {
+    const gapEventId = body?.gapEventId;
+    const waitingCandidateId = body?.waitingCandidateId;
+    if (
+      typeof gapEventId !== "string" ||
+      typeof waitingCandidateId !== "string"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "reject_candidate requiere gapEventId y waitingCandidateId como string",
+        },
+        { status: 400 },
+      );
+    }
+    // Persiste el rechazo. Idempotente vía @@unique del schema:
+    // si ya existe, capturamos el error de unique violation y devolvemos OK.
+    try {
+      await prisma.rejectedCandidate.create({
+        data: { clinicId, gapEventId, waitingCandidateId },
+      });
+    } catch (e: unknown) {
+      // P2002 = unique constraint violation en Prisma. Aceptable: la
+      // candidata ya estaba rechazada, idempotente.
+      const code = (e as { code?: string }).code;
+      if (code !== "P2002") {
+        throw e;
+      }
+    }
+    // NO tocamos suggestionDecision — sigue en "pending" para que el motor
+    // proponga la siguiente candidata en el GET subsecuente.
   } else if (
     action === "accepted" ||
     action === "rejected" ||

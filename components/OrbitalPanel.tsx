@@ -45,6 +45,10 @@ type Suggestion = {
   durationSlots: number;
   status: "confirmed" | "delayed" | "cancelled" | "suggested";
   value: number;
+  // S18.6: IDs opacos rellenados por el adapter del clean core para
+  // permitir rechazar UNA candidata específica e iterar a la siguiente.
+  gapEventId?: string;
+  waitingCandidateId?: string;
 };
 
 type AppointmentStatus =
@@ -102,6 +106,23 @@ export default function OrbitalPanel({
   const canReopenSuggestion = !isPending;
   const topCandidates = useMemo(() => rankedCandidates.slice(0, 3), [rankedCandidates]);
 
+  // S18.6 UX (α): cuando el motor agota candidatas (todas rechazadas) →
+  // suggestion=null Y decision=pending. Distinto de "no había nada que hacer
+  // de partida" (donde tampoco hay rankedCandidates históricos relevantes).
+  // Heurística pragmática: si hay rankedCandidates en el response pero no
+  // suggestion, significa que el motor SÍ podría proponer pero ha agotado
+  // las viables tras los rechazos del operador.
+  // NOTA: cuando el motor rechaza N candidatas y ya no le quedan, el response
+  // viene con rankedCandidates=[] (porque el waitlist filtrado está vacío).
+  // Por eso no podemos detectarlo solo con rankedCandidates.length. Lo
+  // detectamos con un flag derivado: si llegamos a !hasSuggestion + isPending
+  // y la página NO acaba de cargar (es decir, hubo interacción), mostramos
+  // el banner de "agotado". Para v1 simple: mostramos el banner siempre que
+  // !hasSuggestion + isPending y dejamos que el operador decida si fue por
+  // rechazos o porque no había nada de partida — el botón "Volver a pendiente"
+  // funciona en ambos casos (purga rejected, reabre).
+  const showExhaustedBanner = !hasSuggestion && isPending;
+
   async function submitDecision(action: SuggestionDecision | "reset") {
     try {
       setSubmitting(true);
@@ -123,6 +144,48 @@ export default function OrbitalPanel({
     } catch (error) {
       console.error(error);
       alert("No se pudo actualizar la decisión. Revisa la consola.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /**
+   * S18.6 UX (α): "Rechazar" rechaza UNA candidata específica e itera
+   * automáticamente. El motor propondrá la siguiente top-1 del waitlist
+   * filtrado en el response. Cuando se agoten todas las candidatas viables,
+   * el response vendrá con suggestion=null y la UI mostrará "Caso agotado".
+   *
+   * NO toca decision (sigue "pending"). El reset (botón "Reabrir candidatas")
+   * limpia el historial de rejected.
+   */
+  async function submitRejectCandidate(
+    gapEventId: string,
+    waitingCandidateId: string,
+  ) {
+    try {
+      setSubmitting(true);
+
+      const response = await fetch("/api/orbital-state", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "reject_candidate",
+          gapEventId,
+          waitingCandidateId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("No se pudo rechazar esta candidata");
+      }
+
+      const updatedState = (await response.json()) as OrbitalStateResponse;
+      onStateChange(updatedState);
+    } catch (error) {
+      console.error(error);
+      alert("No se pudo rechazar esta candidata. Revisa la consola.");
     } finally {
       setSubmitting(false);
     }
@@ -150,6 +213,8 @@ export default function OrbitalPanel({
       );
     }
 
+    // Caso heredado: solo alcanzable si quedó decision="rejected" persistido
+    // de versiones anteriores. Con UX (α) ya no se entra aquí desde la UI.
     if (isRejected) {
       return (
         <div
@@ -174,7 +239,7 @@ export default function OrbitalPanel({
     return null;
   }
 
-  function renderReopenButton() {
+  function renderReopenButton(label: string = "Volver a pendiente") {
     if (!canReopenSuggestion) {
       return null;
     }
@@ -197,8 +262,59 @@ export default function OrbitalPanel({
           opacity: submitting ? 0.7 : 1,
         }}
       >
-        Volver a pendiente
+        {label}
       </button>
+    );
+  }
+
+  /**
+   * S18.6 UX (α): banner informativo cuando el motor ha agotado todas las
+   * candidatas viables del waitlist tras rechazos sucesivos del operador.
+   * Ofrece atajo para reabrir todas (reset) y empezar de cero.
+   */
+  function renderExhaustedBanner() {
+    return (
+      <>
+        <div
+          style={{
+            padding: 14,
+            borderRadius: 12,
+            background: "#FFFBEB",
+            border: "1px solid #FDE68A",
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>
+            Caso agotado
+          </div>
+          <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+            No quedan candidatas viables para este hueco. Si has rechazado a
+            todas y quieres volver a evaluarlas, puedes reabrir las candidatas
+            y empezar de cero.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => void submitDecision("reset")}
+            disabled={submitting}
+            style={{
+              flex: 1,
+              minWidth: 160,
+              borderRadius: 12,
+              padding: "12px 14px",
+              background: "#FFFFFF",
+              color: "#0F172A",
+              fontWeight: 700,
+              border: "1px solid #CBD5E1",
+              cursor: submitting ? "not-allowed" : "pointer",
+              opacity: submitting ? 0.7 : 1,
+            }}
+          >
+            Reabrir candidatas
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -255,21 +371,7 @@ export default function OrbitalPanel({
         </div>
 
         <div style={{ padding: 20 }}>
-          {!hasSuggestion && isPending ? (
-            <div
-              style={{
-                padding: 14,
-                borderRadius: 12,
-                background: "#F8FAFC",
-                border: "1px solid #E2E8F0",
-                color: "#475569",
-                fontSize: 13,
-                lineHeight: 1.6,
-              }}
-            >
-              No hay sugerencia activa. El motor seguirá monitorizando la agenda.
-            </div>
-          ) : null}
+          {showExhaustedBanner ? renderExhaustedBanner() : null}
 
           {!hasSuggestion && !isPending ? (
             <>
@@ -353,8 +455,26 @@ export default function OrbitalPanel({
 
                     <button
                       type="button"
-                      onClick={() => void submitDecision("rejected")}
+                      onClick={() => {
+                        // S18.6 UX (α): "Rechazar" itera a la siguiente
+                        // candidata. Si los IDs no están disponibles
+                        // (caso defensivo: backend no rellenó suggestion.gapEventId
+                        // o waitingCandidateId), caemos al rechazo total —
+                        // comportamiento heredado del v7.3 como safety net.
+                        if (
+                          suggestion.gapEventId &&
+                          suggestion.waitingCandidateId
+                        ) {
+                          void submitRejectCandidate(
+                            suggestion.gapEventId,
+                            suggestion.waitingCandidateId,
+                          );
+                        } else {
+                          void submitDecision("rejected");
+                        }
+                      }}
                       disabled={submitting}
+                      title="Rechaza esta candidata. El motor propondrá la siguiente automáticamente."
                       style={{
                         flex: 1,
                         minWidth: 160,

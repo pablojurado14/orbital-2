@@ -15,6 +15,17 @@
  *
  * NO toca persistencia. No depende de Prisma. Es una función pura.
  * La capa de traducción schema ↔ motor vive en app/api/orbital-state/route.ts.
+ *
+ * Sesión 18.6 — cambios mínimos en tipos compartidos:
+ *   - Suggestion extendida con gapEventId? y waitingCandidateId? opcionales,
+ *     usados por el clean core (motor v2.0) para propagar IDs al frontend
+ *     y permitir la iteración de candidatas (decisión rectora 11). El v7.3
+ *     legacy NO los rellena — son opcionales y permanecen undefined cuando
+ *     buildOrbitalState construye la suggestion.
+ *   - Decisión rectora 12 (S18.6): la regla §7.3 ("no tocar este archivo
+ *     salvo borrarlo en S19") queda relajada porque el v7.3 ya NO sirve
+ *     respuestas (flag flippeado en S18.5). Modificar tipos compartidos
+ *     ya no afecta a producción. Lógica del archivo NO se toca, solo tipos.
  */
 
 import type {
@@ -40,6 +51,11 @@ export type Suggestion = {
   durationSlots: number;
   status: AppointmentStatus;
   value: number;
+  // S18.6: IDs opacos del backend para iteración de candidatas. Opcionales
+  // por compatibilidad con buildOrbitalState (v7.3 legacy) que los deja
+  // undefined. El adapter del clean core (v2.0) sí los rellena.
+  gapEventId?: string;
+  waitingCandidateId?: string;
 };
 
 export type OrbitalState = {
@@ -292,6 +308,7 @@ export function buildOrbitalState(
   }
 
   // Construir la suggestion (visible en agenda como status "suggested").
+  // gapEventId/waitingCandidateId quedan undefined — son del clean core S18.6.
   const suggestion: Suggestion = {
     start: gap.start,
     gabinete: gap.gabinete,

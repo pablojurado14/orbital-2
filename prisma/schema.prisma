@@ -24,6 +24,7 @@ model ClinicSettings {
   procedureActivations   ProcedureActivation[]
   constraintRules        ConstraintRule[]
   waitlistEntries        WaitlistEntry[]
+  rejectedCandidates     RejectedCandidate[]
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
 }
@@ -330,4 +331,37 @@ model WaitlistEntry {
   @@index([patientId])
   @@index([desiredProcedureId])
   @@index([desiredTreatmentTypeId])
+}
+
+// ============================================================
+// Iteración de candidatas (Sesión 18.6)
+// ============================================================
+
+// Candidatas de waitlist que el operador ha rechazado para un hueco
+// concreto (gap = Appointment cancelado). El adapter las filtra del
+// waitlist context antes de pasar al Coordinator. Se purgan al cambiar
+// de día (medianoche Madrid) por housekeeping en route.ts.
+//
+// Decisión rectora 11 (S18.6): el gap se identifica por el Appointment.id
+// del cancelado (como string). Misma referencia que entra al cancellation
+// event. Cuando S20+ implemente multi-gap (deuda PROACTIVE-SWEEP-MULTI-GAP-V1),
+// cada gap individual seguirá teniendo su Appointment.id.
+//
+// gapEventId y waitingCandidateId son strings (no FKs) porque:
+//   - El clean core opera con IDs opacos (ResourceId/EventId).
+//   - Una FK a Appointment forzaría onDelete cascade que no queremos
+//     (si se borra el cancelado, el rejected sigue siendo histórico).
+//   - waitingCandidateId apunta a WaitlistEntry.id pero stringificado;
+//     mismo razonamiento de no-FK.
+model RejectedCandidate {
+  id                 Int            @id @default(autoincrement())
+  clinicId           Int
+  gapEventId         String
+  waitingCandidateId String
+  rejectedAt         DateTime       @default(now())
+  clinic             ClinicSettings @relation(fields: [clinicId], references: [id])
+
+  @@unique([clinicId, gapEventId, waitingCandidateId])
+  @@index([clinicId, gapEventId])
+  @@index([clinicId, rejectedAt])
 }
