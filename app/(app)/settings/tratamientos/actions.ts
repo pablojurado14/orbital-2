@@ -57,8 +57,10 @@ export async function deleteTratamiento(id: number) {
     const hasAppointments = await prisma.appointment.findFirst({
       where: { treatmentTypeId: id, clinicId },
     });
-    const hasWaiting = await prisma.patient.findFirst({
-      where: { waitingTreatmentId: id, clinicId },
+    // S19.B: la check pasa de Patient.waitingTreatmentId a
+    // WaitlistEntry.desiredTreatmentTypeId. Patient ya no tiene columnas waiting*.
+    const hasWaiting = await prisma.waitlistEntry.findFirst({
+      where: { desiredTreatmentTypeId: id, clinicId },
     });
 
     if (hasAppointments || hasWaiting) {

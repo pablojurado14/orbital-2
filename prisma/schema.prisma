@@ -83,7 +83,6 @@ model TreatmentType {
   clinicId        Int?
   clinic          ClinicSettings? @relation(fields: [clinicId], references: [id])
   appointments    Appointment[]
-  waitingPatients Patient[]       @relation("PatientWaitingTreatment")
   waitlistEntries WaitlistEntry[]
 
   @@index([clinicId])
@@ -96,13 +95,7 @@ model Patient {
   email                 String?
   notes                 String?
   createdAt             DateTime        @default(now())
-  // Campos waiting* legacy: lectura por motor v7.3. Migrar a WaitlistEntry en Sesion 18.
-  // Deuda: WAITLIST-DUAL-COLUMNS-S18 / WAITLIST-RESYNC-S18.
-  inWaitingList         Boolean         @default(false)
-  waitingTreatmentId    Int?
-  waitingDurationSlots  Int?
-  waitingValue          Float?
-  waitingCurrency       String          @default("EUR")
+  active                Boolean         @default(true)
   priority              Int             @default(1)
   availableNow          Boolean         @default(true)
   easeScore             Int             @default(5)
@@ -116,7 +109,6 @@ model Patient {
   clinic                ClinicSettings? @relation(fields: [clinicId], references: [id])
   preferredGabinete     Gabinete?       @relation("PatientPreferredGabinete", fields: [preferredGabineteId], references: [id])
   preferredDentist      Dentist?        @relation("PatientPreferredDentist", fields: [preferredDentistId], references: [id])
-  waitingTreatment      TreatmentType?  @relation("PatientWaitingTreatment", fields: [waitingTreatmentId], references: [id])
   appointments          Appointment[]
   waitlistEntries       WaitlistEntry[]
 

@@ -62,12 +62,72 @@ export async function seed() {
     prisma.patient.create({ data: { name: "David Q.",  clinicId } }),
   ]);
 
-  // 7. Pacientes en lista de espera
+  // 7. Pacientes en lista de espera (S19.B: WaitlistEntry como entidad
+  // primera-clase. Patient ya no tiene columnas waiting*).
+  const [monica, luis, jorge, pilar] = await Promise.all([
+    prisma.patient.create({
+      data: { name: "Mónica T.", clinicId, preferredGabineteId: gab4.id },
+    }),
+    prisma.patient.create({
+      data: { name: "Luis F.", clinicId, preferredGabineteId: gab2.id },
+    }),
+    prisma.patient.create({
+      data: { name: "Jorge V.", clinicId },
+    }),
+    prisma.patient.create({
+      data: { name: "Pilar R.", clinicId, preferredGabineteId: gab4.id },
+    }),
+  ]);
+
   await Promise.all([
-    prisma.patient.create({ data: { name: "Mónica T.", clinicId, inWaitingList: true, waitingTreatmentId: endodoncia.id, waitingDurationSlots: 2, waitingValue: 180, priority: 4, availableNow: true,  easeScore: 5, preferredGabineteId: gab4.id } }),
-    prisma.patient.create({ data: { name: "Luis F.",   clinicId, inWaitingList: true, waitingTreatmentId: implante.id,   waitingDurationSlots: 3, waitingValue: 400, priority: 5, availableNow: false, easeScore: 2, preferredGabineteId: gab2.id } }),
-    prisma.patient.create({ data: { name: "Jorge V.",  clinicId, inWaitingList: true, waitingTreatmentId: limpieza.id,   waitingDurationSlots: 1, waitingValue: 60,  priority: 3, availableNow: true,  easeScore: 5 } }),
-    prisma.patient.create({ data: { name: "Pilar R.",  clinicId, inWaitingList: true, waitingTreatmentId: revision.id,   waitingDurationSlots: 2, waitingValue: 90,  priority: 2, availableNow: true,  easeScore: 4, preferredGabineteId: gab4.id } }),
+    prisma.waitlistEntry.create({
+      data: {
+        clinicId,
+        patientId: monica.id,
+        desiredTreatmentTypeId: endodoncia.id,
+        durationSlots: 2,
+        value: 180,
+        priority: 4,
+        availableNow: true,
+        easeScore: 5,
+      },
+    }),
+    prisma.waitlistEntry.create({
+      data: {
+        clinicId,
+        patientId: luis.id,
+        desiredTreatmentTypeId: implante.id,
+        durationSlots: 3,
+        value: 400,
+        priority: 5,
+        availableNow: false,
+        easeScore: 2,
+      },
+    }),
+    prisma.waitlistEntry.create({
+      data: {
+        clinicId,
+        patientId: jorge.id,
+        desiredTreatmentTypeId: limpieza.id,
+        durationSlots: 1,
+        value: 60,
+        priority: 3,
+        availableNow: true,
+        easeScore: 5,
+      },
+    }),
+    prisma.waitlistEntry.create({
+      data: {
+        clinicId,
+        patientId: pilar.id,
+        desiredTreatmentTypeId: revision.id,
+        durationSlots: 2,
+        value: 90,
+        priority: 2,
+        availableNow: true,
+        easeScore: 4,
+      },
+    }),
   ]);
 
   // 8. Citas de hoy

@@ -8,11 +8,39 @@ export default async function PacientesPage() {
   const clinicId = getCurrentClinicId();
 
   const [pacientes, gabinetes, dentistas, treatments] = await Promise.all([
-    prisma.patient.findMany({ where: { clinicId }, orderBy: { name: "asc" } }),
+    prisma.patient.findMany({
+      where: { clinicId, active: true },
+      include: {
+        waitlistEntries: {
+          where: { clinicId },
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { name: "asc" },
+    }),
     prisma.gabinete.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
     prisma.dentist.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
     prisma.treatmentType.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
   ]);
+
+  const initialPatients = pacientes.map((p) => {
+    const entry = p.waitlistEntries[0] ?? null;
+    return {
+      id: p.id,
+      name: p.name,
+      phone: p.phone,
+      preferredGabineteId: p.preferredGabineteId,
+      preferredDentistId: p.preferredDentistId,
+      inWaitingList: entry !== null,
+      waitlistEntryId: entry?.id ?? null,
+      waitingTreatmentId: entry?.desiredTreatmentTypeId ?? null,
+      waitingDurationSlots: entry?.durationSlots ?? null,
+      waitingValue: entry?.value ?? null,
+      priority: entry?.priority ?? 3,
+      availableNow: entry?.availableNow ?? true,
+      easeScore: entry?.easeScore ?? 3,
+    };
+  });
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -22,7 +50,7 @@ export default async function PacientesPage() {
       </header>
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
         <PacientesClient
-          initialPatients={pacientes}
+          initialPatients={initialPatients}
           gabinetes={gabinetes}
           dentistas={dentistas}
           treatments={treatments}

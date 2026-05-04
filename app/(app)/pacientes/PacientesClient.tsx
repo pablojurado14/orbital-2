@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { savePatient } from "./actions";
+import { savePatient, deletePatient } from "./actions";
 
 type Treatment = {
   id: number;
@@ -19,6 +19,7 @@ type Patient = {
   name: string;
   phone: string | null;
   inWaitingList: boolean;
+  waitlistEntryId: number | null;
   preferredGabineteId: number | null;
   preferredDentistId: number | null;
   waitingTreatmentId: number | null;
@@ -50,6 +51,8 @@ type FormState = {
   easeScore: number;
 };
 
+type Mode = "idle" | "creating" | "editing";
+
 const EMPTY_FORM: FormState = {
   name: "",
   phone: "",
@@ -71,9 +74,11 @@ export default function PacientesClient({
   treatments,
 }: Props) {
   const router = useRouter();
+  const [mode, setMode] = useState<Mode>("idle");
   const [selected, setSelected] = useState<Patient | null>(null);
   const [formData, setFormData] = useState<FormState>(EMPTY_FORM);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const treatmentsById = useMemo(() => {
@@ -81,9 +86,6 @@ export default function PacientesClient({
     treatments.forEach((t) => map.set(t.id, t));
     return map;
   }, [treatments]);
-
-  const isPristine =
-    !selected && JSON.stringify(formData) === JSON.stringify(EMPTY_FORM);
 
   const handleTreatmentChange = (treatmentId: string) => {
     const id = Number(treatmentId);
@@ -96,38 +98,22 @@ export default function PacientesClient({
     }));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSaving(true);
+  const closePanel = () => {
+    setMode("idle");
+    setSelected(null);
+    setFormData(EMPTY_FORM);
     setError(null);
-    const res = await savePatient({
-      id: selected?.id,
-      name: formData.name,
-      phone: formData.phone || null,
-      inWaitingList: formData.inWaitingList,
-      preferredGabineteId: formData.preferredGabineteId ? Number(formData.preferredGabineteId) : null,
-      preferredDentistId: formData.preferredDentistId ? Number(formData.preferredDentistId) : null,
-      waitingTreatmentId:
-        formData.inWaitingList && formData.waitingTreatmentId
-          ? Number(formData.waitingTreatmentId)
-          : null,
-      waitingDurationSlots: formData.inWaitingList ? formData.waitingDurationSlots : null,
-      waitingValue: formData.inWaitingList ? formData.waitingValue : null,
-      priority: formData.inWaitingList ? formData.priority : 1,
-      availableNow: formData.inWaitingList ? formData.availableNow : true,
-      easeScore: formData.inWaitingList ? formData.easeScore : 5,
-    });
-    setIsSaving(false);
-    if (res.success) {
-      setSelected(null);
-      setFormData(EMPTY_FORM);
-      router.refresh();
-    } else {
-      setError(res.error || "Error al guardar el paciente.");
-    }
+  };
+
+  const startCreating = () => {
+    setMode("creating");
+    setSelected(null);
+    setFormData(EMPTY_FORM);
+    setError(null);
   };
 
   const loadPatientToForm = (p: Patient) => {
+    setMode("editing");
     setSelected(p);
     setError(null);
     setFormData({
@@ -145,22 +131,67 @@ export default function PacientesClient({
     });
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSaving(true);
+    setError(null);
+    const res = await savePatient({
+      id: selected?.id,
+      waitlistEntryId: selected?.waitlistEntryId ?? null,
+      name: formData.name,
+      phone: formData.phone || null,
+      inWaitingList: formData.inWaitingList,
+      preferredGabineteId: formData.preferredGabineteId ? Number(formData.preferredGabineteId) : null,
+      preferredDentistId: formData.preferredDentistId ? Number(formData.preferredDentistId) : null,
+      waitingTreatmentId:
+        formData.inWaitingList && formData.waitingTreatmentId
+          ? Number(formData.waitingTreatmentId)
+          : null,
+      waitingDurationSlots: formData.inWaitingList ? formData.waitingDurationSlots : null,
+      waitingValue: formData.inWaitingList ? formData.waitingValue : null,
+      priority: formData.inWaitingList ? formData.priority : 1,
+      availableNow: formData.inWaitingList ? formData.availableNow : true,
+      easeScore: formData.inWaitingList ? formData.easeScore : 5,
+    });
+    setIsSaving(false);
+    if (res.success) {
+      closePanel();
+      router.refresh();
+    } else {
+      setError(res.error || "Error al guardar el paciente.");
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selected) return;
+    const ok = window.confirm(
+      `¿Eliminar a ${selected.name}? Si tiene citas previas se marcará como dado de baja (las citas se conservan). Si no tiene citas, se borrará por completo.`,
+    );
+    if (!ok) return;
+    setIsDeleting(true);
+    setError(null);
+    const res = await deletePatient(selected.id);
+    setIsDeleting(false);
+    if (res.success) {
+      closePanel();
+      router.refresh();
+    } else {
+      setError(res.error || "Error al eliminar el paciente.");
+    }
+  };
+
+  const panelOpen = mode !== "idle";
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 min-h-[500px]">
-      <div className="col-span-2 border-r border-slate-200">
+    <div className={`grid grid-cols-1 ${panelOpen ? "md:grid-cols-3" : ""} min-h-[500px]`}>
+      <div className={`${panelOpen ? "md:col-span-2 md:border-r border-slate-200" : ""}`}>
         <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
           <h2 className="font-bold text-slate-800">Directorio ({initialPatients.length})</h2>
           <button
-            onClick={() => {
-              if (isPristine) return;
-              setSelected(null);
-              setFormData(EMPTY_FORM);
-              setError(null);
-            }}
-            disabled={isPristine}
-            title={isPristine ? "Ya estás en modo alta" : "Limpiar formulario y empezar nuevo"}
+            onClick={startCreating}
+            disabled={mode === "creating"}
             className={`text-sm px-3 py-1.5 rounded-md font-bold transition-opacity ${
-              isPristine
+              mode === "creating"
                 ? "bg-slate-300 text-slate-500 cursor-not-allowed"
                 : "bg-teal-600 text-white hover:bg-teal-700"
             }`}
@@ -191,187 +222,211 @@ export default function PacientesClient({
         </div>
       </div>
 
-      <div className="p-6 bg-slate-50 max-h-[700px] overflow-y-auto">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <h3 className="font-bold text-slate-800 mb-4">{selected ? "Ficha Paciente" : "Alta de Paciente"}</h3>
+      {panelOpen && (
+        <div className="p-6 bg-slate-50 max-h-[700px] overflow-y-auto relative">
+          <button
+            type="button"
+            onClick={closePanel}
+            aria-label="Cerrar"
+            className="absolute top-4 right-4 rounded-md p-1 text-slate-400 transition hover:bg-slate-200 hover:text-slate-600"
+          >
+            <span className="text-xl leading-none">×</span>
+          </button>
 
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Nombre Completo</label>
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full p-2 border rounded mt-1 bg-white"
-              required
-            />
-          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <h3 className="font-bold text-slate-800 mb-4 pr-8">
+              {mode === "editing" ? "Ficha Paciente" : "Alta de Paciente"}
+            </h3>
 
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Teléfono (opcional)</label>
-            <input
-              type="text"
-              value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-              className="w-full p-2 border rounded mt-1 bg-white"
-            />
-          </div>
-
-          <div className="pt-2">
-            <label className="flex items-center gap-3 p-3 bg-white border rounded-xl cursor-pointer hover:border-orange-300 transition-colors">
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase">Nombre Completo</label>
               <input
-                type="checkbox"
-                checked={formData.inWaitingList}
-                onChange={(e) => setFormData({ ...formData, inWaitingList: e.target.checked })}
-                className="w-5 h-5 accent-orange-500"
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="w-full p-2 border rounded mt-1 bg-white"
+                required
               />
-              <span className="text-sm font-bold text-slate-700">Añadir a lista de espera</span>
-            </label>
-          </div>
+            </div>
 
-          {formData.inWaitingList && (
-            <div className="space-y-3 pt-2 border-t border-slate-200">
-              <h4 className="text-[10px] font-black text-orange-500 uppercase tracking-widest pt-2">
-                Datos para el motor
-              </h4>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase">Teléfono (opcional)</label>
+              <input
+                type="text"
+                value={formData.phone}
+                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                className="w-full p-2 border rounded mt-1 bg-white"
+              />
+            </div>
 
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Tratamiento</label>
-                <select
-                  value={formData.waitingTreatmentId}
-                  onChange={(e) => handleTreatmentChange(e.target.value)}
-                  className="w-full p-2 border rounded text-sm bg-white mt-1"
-                  required
-                >
-                  <option value="">Selecciona tratamiento</option>
-                  {treatments.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({t.duration} min · €{t.price ?? 0})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Duración (slots)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={6}
-                    value={formData.waitingDurationSlots}
-                    onChange={(e) =>
-                      setFormData({ ...formData, waitingDurationSlots: Number(e.target.value) || 1 })
-                    }
-                    className="w-full p-2 border rounded text-sm bg-white mt-1"
-                    required
-                  />
-                  <p className="text-[10px] text-slate-400 mt-1">1 slot = 30 min</p>
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Valor (€)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={formData.waitingValue}
-                    onChange={(e) =>
-                      setFormData({ ...formData, waitingValue: Number(e.target.value) || 0 })
-                    }
-                    className="w-full p-2 border rounded text-sm bg-white mt-1"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Prioridad (1-5)</label>
-                  <select
-                    value={formData.priority}
-                    onChange={(e) => setFormData({ ...formData, priority: Number(e.target.value) })}
-                    className="w-full p-2 border rounded text-sm bg-white mt-1"
-                  >
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Facilidad (1-5)</label>
-                  <select
-                    value={formData.easeScore}
-                    onChange={(e) => setFormData({ ...formData, easeScore: Number(e.target.value) })}
-                    className="w-full p-2 border rounded text-sm bg-white mt-1"
-                  >
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <label className="flex items-center gap-2 text-sm pt-1">
+            <div className="pt-2">
+              <label className="flex items-center gap-3 p-3 bg-white border rounded-xl cursor-pointer hover:border-orange-300 transition-colors">
                 <input
                   type="checkbox"
-                  checked={formData.availableNow}
-                  onChange={(e) => setFormData({ ...formData, availableNow: e.target.checked })}
-                  className="w-4 h-4 accent-teal-600"
+                  checked={formData.inWaitingList}
+                  onChange={(e) => setFormData({ ...formData, inWaitingList: e.target.checked })}
+                  className="w-5 h-5 accent-orange-500"
                 />
-                <span className="text-slate-700 font-medium">Disponible ahora (acepta avisos cortos)</span>
+                <span className="text-sm font-bold text-slate-700">Añadir a lista de espera</span>
               </label>
             </div>
-          )}
 
-          <div className="space-y-3 pt-2 border-t border-slate-200">
-            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest pt-2">
-              Preferencias Operativas
-            </h4>
-            <select
-              value={formData.preferredGabineteId}
-              onChange={(e) => setFormData({ ...formData, preferredGabineteId: e.target.value })}
-              className="w-full p-2 border rounded text-sm bg-white"
-            >
-              <option value="">Cualquier gabinete</option>
-              {gabinetes.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            {formData.inWaitingList && (
+              <div className="space-y-3 pt-2 border-t border-slate-200">
+                <h4 className="text-[10px] font-black text-orange-500 uppercase tracking-widest pt-2">
+                  Datos para el motor
+                </h4>
 
-            <select
-              value={formData.preferredDentistId}
-              onChange={(e) => setFormData({ ...formData, preferredDentistId: e.target.value })}
-              className="w-full p-2 border rounded text-sm bg-white"
-            >
-              <option value="">Cualquier doctor</option>
-              {dentistas.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Tratamiento</label>
+                  <select
+                    value={formData.waitingTreatmentId}
+                    onChange={(e) => handleTreatmentChange(e.target.value)}
+                    className="w-full p-2 border rounded text-sm bg-white mt-1"
+                    required
+                  >
+                    <option value="">Selecciona tratamiento</option>
+                    {treatments.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.duration} min · €{t.price ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-          {error ? (
-            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">Duración (slots)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={6}
+                      value={formData.waitingDurationSlots}
+                      onChange={(e) =>
+                        setFormData({ ...formData, waitingDurationSlots: Number(e.target.value) || 1 })
+                      }
+                      className="w-full p-2 border rounded text-sm bg-white mt-1"
+                      required
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">1 slot = 30 min</p>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">Valor (€)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={formData.waitingValue}
+                      onChange={(e) =>
+                        setFormData({ ...formData, waitingValue: Number(e.target.value) || 0 })
+                      }
+                      className="w-full p-2 border rounded text-sm bg-white mt-1"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">Prioridad (1-5)</label>
+                    <select
+                      value={formData.priority}
+                      onChange={(e) => setFormData({ ...formData, priority: Number(e.target.value) })}
+                      className="w-full p-2 border rounded text-sm bg-white mt-1"
+                    >
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">Facilidad (1-5)</label>
+                    <select
+                      value={formData.easeScore}
+                      onChange={(e) => setFormData({ ...formData, easeScore: Number(e.target.value) })}
+                      className="w-full p-2 border rounded text-sm bg-white mt-1"
+                    >
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-sm pt-1">
+                  <input
+                    type="checkbox"
+                    checked={formData.availableNow}
+                    onChange={(e) => setFormData({ ...formData, availableNow: e.target.checked })}
+                    className="w-4 h-4 accent-teal-600"
+                  />
+                  <span className="text-slate-700 font-medium">Disponible ahora (acepta avisos cortos)</span>
+                </label>
+              </div>
+            )}
+
+            <div className="space-y-3 pt-2 border-t border-slate-200">
+              <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest pt-2">
+                Preferencias Operativas
+              </h4>
+              <select
+                value={formData.preferredGabineteId}
+                onChange={(e) => setFormData({ ...formData, preferredGabineteId: e.target.value })}
+                className="w-full p-2 border rounded text-sm bg-white"
+              >
+                <option value="">Cualquier gabinete</option>
+                {gabinetes.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={formData.preferredDentistId}
+                onChange={(e) => setFormData({ ...formData, preferredDentistId: e.target.value })}
+                className="w-full p-2 border rounded text-sm bg-white"
+              >
+                <option value="">Cualquier doctor</option>
+                {dentistas.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          ) : null}
 
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="w-full bg-slate-900 text-white p-3 rounded-xl font-bold mt-4 shadow-lg active:scale-95 transition-all disabled:opacity-60"
-          >
-            {isSaving ? "Guardando..." : "Guardar Ficha"}
-          </button>
-        </form>
-      </div>
+            {error ? (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={isSaving || isDeleting}
+              className="w-full bg-slate-900 text-white p-3 rounded-xl font-bold mt-4 shadow-lg active:scale-95 transition-all disabled:opacity-60"
+            >
+              {isSaving ? "Guardando..." : "Guardar Ficha"}
+            </button>
+
+            {mode === "editing" && (
+              <button
+                type="button"
+                onClick={() => void handleDelete()}
+                disabled={isSaving || isDeleting}
+                className="w-full border border-red-200 bg-white text-red-600 p-3 rounded-xl font-bold transition hover:bg-red-50 disabled:opacity-60"
+              >
+                {isDeleting ? "Eliminando..." : "Eliminar paciente"}
+              </button>
+            )}
+          </form>
+        </div>
+      )}
     </div>
   );
 }
