@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import bcrypt from "bcryptjs";
 
 export async function seed() {
   // 1. Clínica única (id=1) — base del tenant
@@ -43,12 +44,12 @@ export async function seed() {
   ]);
 
   // 5. Tratamientos
-  const [revision, empaste, implanteRev, limpieza, endodoncia, implante, empasteX3] = await Promise.all([
+  const [revision, empaste, implanteRev, limpieza, endodonciaUnirradicular, implante, empasteX3] = await Promise.all([
     prisma.treatmentType.create({ data: { name: "Revisión",      duration: 30, price: 45,  clinicId } }),
     prisma.treatmentType.create({ data: { name: "Empaste",       duration: 60, price: 120, clinicId } }),
-    prisma.treatmentType.create({ data: { name: "Implante rev.", duration: 60, price: 160, clinicId } }),
+    prisma.treatmentType.create({ data: { name: "Revisión de implante", duration: 60, price: 160, clinicId } }),
     prisma.treatmentType.create({ data: { name: "Limpieza",      duration: 60, price: 70,  clinicId } }),
-    prisma.treatmentType.create({ data: { name: "Endodoncia",    duration: 60, price: 180, clinicId } }),
+    prisma.treatmentType.create({ data: { name: "Endodoncia unirradicular",    duration: 60, price: 180, clinicId } }),
     prisma.treatmentType.create({ data: { name: "Implante",      duration: 90, price: 400, clinicId } }),
     prisma.treatmentType.create({ data: { name: "Empaste x3",    duration: 60, price: 150, clinicId } }),
   ]);
@@ -62,8 +63,7 @@ export async function seed() {
     prisma.patient.create({ data: { name: "David Q.",  clinicId } }),
   ]);
 
-  // 7. Pacientes en lista de espera (S19.B: WaitlistEntry como entidad
-  // primera-clase. Patient ya no tiene columnas waiting*).
+  // 7. Pacientes en lista de espera (S19.B)
   const [monica, luis, jorge, pilar] = await Promise.all([
     prisma.patient.create({
       data: { name: "Mónica T.", clinicId, preferredGabineteId: gab4.id },
@@ -82,50 +82,26 @@ export async function seed() {
   await Promise.all([
     prisma.waitlistEntry.create({
       data: {
-        clinicId,
-        patientId: monica.id,
-        desiredTreatmentTypeId: endodoncia.id,
-        durationSlots: 2,
-        value: 180,
-        priority: 4,
-        availableNow: true,
-        easeScore: 5,
+        clinicId, patientId: monica.id, desiredTreatmentTypeId: endodonciaUnirradicular.id,
+        durationSlots: 2, value: 180, priority: 4, availableNow: true, easeScore: 5,
       },
     }),
     prisma.waitlistEntry.create({
       data: {
-        clinicId,
-        patientId: luis.id,
-        desiredTreatmentTypeId: implante.id,
-        durationSlots: 3,
-        value: 400,
-        priority: 5,
-        availableNow: false,
-        easeScore: 2,
+        clinicId, patientId: luis.id, desiredTreatmentTypeId: implante.id,
+        durationSlots: 3, value: 400, priority: 5, availableNow: false, easeScore: 2,
       },
     }),
     prisma.waitlistEntry.create({
       data: {
-        clinicId,
-        patientId: jorge.id,
-        desiredTreatmentTypeId: limpieza.id,
-        durationSlots: 1,
-        value: 60,
-        priority: 3,
-        availableNow: true,
-        easeScore: 5,
+        clinicId, patientId: jorge.id, desiredTreatmentTypeId: limpieza.id,
+        durationSlots: 1, value: 60, priority: 3, availableNow: true, easeScore: 5,
       },
     }),
     prisma.waitlistEntry.create({
       data: {
-        clinicId,
-        patientId: pilar.id,
-        desiredTreatmentTypeId: revision.id,
-        durationSlots: 2,
-        value: 90,
-        priority: 2,
-        availableNow: true,
-        easeScore: 4,
+        clinicId, patientId: pilar.id, desiredTreatmentTypeId: revision.id,
+        durationSlots: 2, value: 90, priority: 2, availableNow: true, easeScore: 4,
       },
     }),
   ]);
@@ -142,5 +118,23 @@ export async function seed() {
     prisma.appointment.create({ data: { clinicId, date: today, startTime: "10:30", duration: 60, status: "cancelled", value: 150, gabineteId: gab4.id, patientId: david.id,  dentistId: drGarcia.id, treatmentTypeId: empasteX3.id } }),
   ]);
 
+  // 9. Usuario admin (S19.5)
+  const adminEmail = "pablo7urado@gmail.com";
+  const adminPasswordPlain = "orbital2026!";
+  const passwordHash = await bcrypt.hash(adminPasswordPlain, 10);
+
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: {},
+    create: {
+      email: adminEmail,
+      passwordHash,
+      name: "Pablo Jurado",
+      role: "admin",
+      clinicId,
+    },
+  });
+
   console.log("✅ Seed completado.");
+  console.log(`   Admin: ${adminEmail} / ${adminPasswordPlain}`);
 }

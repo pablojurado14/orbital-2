@@ -5,7 +5,7 @@ import CitasClient from "./CitasClient";
 export const dynamic = "force-dynamic";
 
 export default async function CitasPage() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
 
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());

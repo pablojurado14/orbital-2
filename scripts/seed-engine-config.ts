@@ -30,7 +30,7 @@ import { getCurrentClinicId } from "../lib/tenant";
 const TARGET_THRESHOLD = 0.001;
 
 async function main() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = 1;
 
   console.log("\n=== Seed engine config (umbralDisparoProactivo) ===");
   console.log(`clinicId: ${clinicId}`);

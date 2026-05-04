@@ -13,7 +13,7 @@ export async function saveHorario(data: {
   afternoonClose: string | null;
 }) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     const result = await prisma.daySchedule.updateMany({
       where: { id: data.id, clinicId },

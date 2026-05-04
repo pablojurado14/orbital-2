@@ -55,7 +55,7 @@ function parseDate(yyyymmdd: string): Date | null {
 
 export async function POST(request: NextRequest) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
     const body = await request.json();
 
     const patientId = Number(body?.patientId);

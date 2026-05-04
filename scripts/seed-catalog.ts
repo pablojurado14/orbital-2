@@ -4,7 +4,7 @@
  * Crea:
  *  - 14 Procedure (catálogo global, sin clinicId — gestionado por la empresa).
  *    Códigos CDT (Code on Dental Procedures and Nomenclature, ADA).
- *  - 8 Equipment para la clínica actual (clinicId vía getCurrentClinicId()).
+ *  - 8 Equipment para la clínica actual (clinicId vía 1).
  *  - EquipmentRoom: mobile → todos los gabinetes activos; fixed_in_room → primer gabinete.
  *  - ProcedureActivation para todos los Procedure × clinicId actual, cold start (learned = reference).
  *
@@ -420,7 +420,7 @@ function validateProcedureDistributions(procedures: ProcedureSeed[]): void {
 // ============================================================
 
 async function main() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = 1;
   console.log(`\n🌱 Seed catálogo maestro — clinicId=${clinicId}\n`);
 
   validateProcedureDistributions(PROCEDURES);

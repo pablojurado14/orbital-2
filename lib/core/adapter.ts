@@ -25,7 +25,7 @@
  *     currentInstantMs?: number,
  *   ): Promise<OrbitalState>
  *
- * Multi-tenant: getCurrentClinicId() se llama una vez al inicio de cada
+ * Multi-tenant: await getCurrentClinicId() se llama una vez al inicio de cada
  * función pública. Todas las queries filtran por ese clinicId. Regla §7.7
  * del master.
  *
@@ -122,6 +122,7 @@ import type {
 const TT_TO_PROCEDURE_CODE: Readonly<Record<string, string>> = {
   Limpieza: "D1110",
   Revisión: "D0150",
+  "Revisión de implante": "D0150",
   Empaste: "D2391",
   "Empaste x3": "D2391",
   Implante: "D6010",
@@ -348,7 +349,10 @@ async function buildContextsFromDbInternal(
   legacyMeta: LegacyMetadata;
   rejectedByGap: RejectedByGap;
 }> {
-  const clinicId = getCurrentClinicId();
+  const clinicId = currentInstantMs !== undefined && (globalThis as { __ORBITAL_OVERRIDE_CLINIC_ID__?: number }).__ORBITAL_OVERRIDE_CLINIC_ID__ !== undefined
+    ? (globalThis as { __ORBITAL_OVERRIDE_CLINIC_ID__?: number }).__ORBITAL_OVERRIDE_CLINIC_ID__!
+    : await getCurrentClinicId();
+  
   const now = currentInstantMs !== undefined ? new Date(currentInstantMs) : new Date();
 
   const { today: todayStart, tomorrow: todayEnd } = getMadridDayBoundaries(now);
@@ -650,6 +654,7 @@ async function buildContextsFromDbInternal(
     waitlistTreatmentByEntryId[wIdStr] = treatmentDisplay;
     waitlistDurationSlotsByEntryId[wIdStr] = w.durationSlots;
     waitlistValueByEntryId[wIdStr] = w.value;
+
 
     return {
       id: wIdStr,

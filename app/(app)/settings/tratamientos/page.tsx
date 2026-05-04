@@ -4,7 +4,7 @@ import TratamientosClient from "./TratamientosClient";
 
 export default async function TratamientosPage() {
   const tratamientos = await prisma.treatmentType.findMany({
-    where: { clinicId: getCurrentClinicId() },
+    where: { clinicId: await getCurrentClinicId() },
     orderBy: { name: "asc" },
   });
   return (

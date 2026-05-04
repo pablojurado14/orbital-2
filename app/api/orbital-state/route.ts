@@ -72,7 +72,7 @@ async function purgeStaleRejectedCandidates(clinicId: number): Promise<void> {
 }
 
 async function ensureSeeded() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
   const clinic = await prisma.clinicSettings.findUnique({ where: { id: clinicId } });
 
   if (!clinic) {
@@ -89,7 +89,7 @@ async function ensureSeeded() {
 }
 
 async function loadStateData() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
   const { today, tomorrow } = getMadridDayBoundaries();
 
   const [appointmentsRaw, gabinetesRaw, runtime] = await Promise.all([
@@ -184,7 +184,7 @@ async function buildResponseFromCleanCore(
 
 export async function GET() {
   await ensureSeeded();
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
 
   const {
     appointmentsRaw,
@@ -213,7 +213,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   await ensureSeeded();
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
 
   const body = await request.json();
   const action = body?.action as

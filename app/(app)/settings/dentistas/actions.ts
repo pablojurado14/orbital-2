@@ -11,7 +11,7 @@ export async function saveDentist(data: {
   active: boolean;
 }) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     if (data.id) {
       const result = await prisma.dentist.updateMany({
@@ -52,7 +52,7 @@ export async function saveDentist(data: {
 
 export async function deleteDentist(id: number) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     const hasAppointments = await prisma.appointment.findFirst({
       where: { dentistId: id, clinicId },

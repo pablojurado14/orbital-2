@@ -4,7 +4,7 @@ import GabinetesClient from "./GabinetesClient";
 
 export default async function GabinetesPage() {
   const gabinetes = await prisma.gabinete.findMany({
-    where: { clinicId: getCurrentClinicId() },
+    where: { clinicId: await getCurrentClinicId() },
     orderBy: { name: "asc" },
   });
   return (

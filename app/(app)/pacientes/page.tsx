@@ -5,7 +5,7 @@ import PacientesClient from "./PacientesClient";
 export const dynamic = "force-dynamic";
 
 export default async function PacientesPage() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
 
   const [pacientes, gabinetes, dentistas, treatments] = await Promise.all([
     prisma.patient.findMany({

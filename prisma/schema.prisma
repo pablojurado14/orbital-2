@@ -25,6 +25,7 @@ model ClinicSettings {
   constraintRules        ConstraintRule[]
   waitlistEntries        WaitlistEntry[]
   rejectedCandidates     RejectedCandidate[]
+  users                  User[]
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
 }
@@ -116,33 +117,33 @@ model Patient {
 }
 
 model Appointment {
-  id              Int                    @id @default(autoincrement())
-  startTime       String
-  date            DateTime
-  duration        Int
+  id                Int                    @id @default(autoincrement())
+  startTime         String
+  date              DateTime
+  duration          Int
   // status: uno de "scheduled" | "confirmed" | "in_waiting_room" | "in_progress"
   //         | "completed" | "cancelled" | "no_show". Validacion en TS via
   //         AppointmentRuntimeStatus en lib/core/types.ts.
-  status          String                 @default("scheduled")
-  value           Float?
-  currency        String                 @default("EUR")
-  notes           String?
+  status            String                 @default("scheduled")
+  value             Float?
+  currency          String                 @default("EUR")
+  notes             String?
   // Slots reales (rellenados al iniciar/terminar la cita). NULL hasta entonces.
-  actualStartTime DateTime?
-  actualEndTime   DateTime?
-  patientId       Int
-  patient         Patient                @relation(fields: [patientId], references: [id])
-  dentistId       Int
-  dentist         Dentist                @relation(fields: [dentistId], references: [id])
-  gabineteId      Int
-  gabinete        Gabinete               @relation(fields: [gabineteId], references: [id])
-  treatmentTypeId Int
-  treatmentType   TreatmentType          @relation(fields: [treatmentTypeId], references: [id])
-  clinicId        Int?
-  clinic          ClinicSettings?        @relation(fields: [clinicId], references: [id])
+  actualStartTime   DateTime?
+  actualEndTime     DateTime?
+  patientId         Int
+  patient           Patient                @relation(fields: [patientId], references: [id])
+  dentistId         Int
+  dentist           Dentist                @relation(fields: [dentistId], references: [id])
+  gabineteId        Int
+  gabinete          Gabinete               @relation(fields: [gabineteId], references: [id])
+  treatmentTypeId   Int
+  treatmentType     TreatmentType          @relation(fields: [treatmentTypeId], references: [id])
+  clinicId          Int?
+  clinic            ClinicSettings?        @relation(fields: [clinicId], references: [id])
   reservedEquipment AppointmentEquipment[]
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
 
   @@index([clinicId, date])
   @@index([date])
@@ -193,20 +194,20 @@ model Procedure {
 }
 
 model Equipment {
-  id                   Int                    @id @default(autoincrement())
-  clinicId             Int
-  type                 String
-  name                 String
-  modality             String
-  setupTimeMs          Int?
-  cleanupTimeMs        Int?
-  sterilizationCycleMs Int?
-  active               Boolean                @default(true)
-  clinic               ClinicSettings         @relation(fields: [clinicId], references: [id])
-  compatibleRooms      EquipmentRoom[]
+  id                      Int                    @id @default(autoincrement())
+  clinicId                Int
+  type                    String
+  name                    String
+  modality                String
+  setupTimeMs             Int?
+  cleanupTimeMs           Int?
+  sterilizationCycleMs    Int?
+  active                  Boolean                @default(true)
+  clinic                  ClinicSettings         @relation(fields: [clinicId], references: [id])
+  compatibleRooms         EquipmentRoom[]
   appointmentReservations AppointmentEquipment[]
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
 
   @@index([clinicId])
   @@index([clinicId, type])
@@ -255,12 +256,12 @@ model ProcedureActivation {
 // en ventanas de tiempo distintas dentro de su duracion. Indexable por equipo+rango
 // para deteccion de conflictos en C2 Validator (Sesion 13).
 model AppointmentEquipment {
-  appointmentId    Int
-  equipmentId      Int
-  reservedFromMs   BigInt
-  reservedToMs     BigInt
-  appointment      Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
-  equipment        Equipment   @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  appointmentId  Int
+  equipmentId    Int
+  reservedFromMs BigInt
+  reservedToMs   BigInt
+  appointment    Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  equipment      Equipment   @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
 
   @@id([appointmentId, equipmentId, reservedFromMs])
   @@index([equipmentId, reservedFromMs])
@@ -356,4 +357,58 @@ model RejectedCandidate {
   @@unique([clinicId, gapEventId, waitingCandidateId])
   @@index([clinicId, gapEventId])
   @@index([clinicId, rejectedAt])
+}
+
+// ============================================================
+// Auth.js v5 (Sesión 19.5)
+// ============================================================
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  passwordHash  String?
+  role          String         @default("admin")
+  clinicId      Int
+  clinic        ClinicSettings @relation(fields: [clinicId], references: [id])
+  accounts      Account[]
+  sessions      Session[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([clinicId])
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@id([identifier, token])
 }

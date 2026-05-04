@@ -25,7 +25,7 @@ export async function savePatient(data: {
   easeScore?: number;
 }): Promise<SaveResult> {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     // S19.B: Patient.waiting* eliminados. La entrada en lista de espera vive
     // en WaitlistEntry. Decisión 1:1 lógica: un paciente o tiene una entry
@@ -125,7 +125,7 @@ export async function savePatient(data: {
  */
 export async function deletePatient(id: number): Promise<DeleteResult> {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     const hasAppointments = await prisma.appointment.findFirst({
       where: { patientId: id, clinicId },

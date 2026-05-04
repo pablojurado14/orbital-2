@@ -13,7 +13,7 @@
  * Ejecutar:
  *   npx tsx --env-file=.env scripts/rewind-appointments-to-today.ts
  *
- * Multi-tenant: solo opera sobre el clinic devuelto por getCurrentClinicId().
+ * Multi-tenant: solo opera sobre el clinic devuelto por 1.
  *
  * Deuda blanda registrada (S18.5): SEED-APPOINTMENTS-FROZEN-TO-FIRST-RUN-V1.
  * Mitigacion provisional. La solucion estructural (seed dinamico o reseed
@@ -47,7 +47,7 @@ function getMadridTodayMidnightUTC(): Date {
 }
 
 async function main() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = 1;
   const todayMidnightUTC = getMadridTodayMidnightUTC();
 
   console.log("\n=== Rewind appointments to today ===");

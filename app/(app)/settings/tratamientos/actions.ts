@@ -12,7 +12,7 @@ export async function saveTratamiento(data: {
   active: boolean;
 }) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     if (data.id) {
       const result = await prisma.treatmentType.updateMany({
@@ -52,7 +52,7 @@ export async function saveTratamiento(data: {
 
 export async function deleteTratamiento(id: number) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
 
     const hasAppointments = await prisma.appointment.findFirst({
       where: { treatmentTypeId: id, clinicId },

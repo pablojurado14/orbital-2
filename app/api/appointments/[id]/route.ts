@@ -58,7 +58,7 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
     const { id: idStr } = await context.params;
     const id = Number(idStr);
     if (!id || Number.isNaN(id)) {

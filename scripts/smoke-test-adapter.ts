@@ -31,7 +31,6 @@
 
 import { buildContextsFromDb, processEvent } from "../lib/core/adapter";
 import { prisma } from "../lib/prisma";
-import { getCurrentClinicId } from "../lib/tenant";
 
 class SmokeAssertionError extends Error {
   constructor(message: string) {
@@ -49,8 +48,8 @@ function assert(condition: unknown, message: string): asserts condition {
 async function main() {
   console.log("\n=== Smoke test del adapter del clean core ===\n");
 
-  const clinicId = getCurrentClinicId();
-  console.log(`clinicId actual: ${clinicId}\n`);
+  const clinicId = 1;
+    console.log(`clinicId actual: ${clinicId}\n`);
 
   // ---- Test 1: buildContextsFromDb ----
   console.log("--- Test 1: buildContextsFromDb() ---");

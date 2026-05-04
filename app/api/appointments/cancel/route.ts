@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 
 export async function POST(request: NextRequest) {
   try {
-    const clinicId = getCurrentClinicId();
+    const clinicId = await getCurrentClinicId();
     const body = await request.json();
     const appointmentId = Number(body?.appointmentId);
 

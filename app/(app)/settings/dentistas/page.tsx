@@ -4,7 +4,7 @@ import DentistasClient from "./DentistasClient";
 
 export default async function DentistasPage() {
   const dentistas = await prisma.dentist.findMany({
-    where: { clinicId: getCurrentClinicId() },
+    where: { clinicId: await getCurrentClinicId() },
     orderBy: { name: "asc" },
   });
   return (

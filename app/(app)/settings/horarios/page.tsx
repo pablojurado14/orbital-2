@@ -3,7 +3,7 @@ import { getCurrentClinicId } from "@/lib/tenant";
 import HorariosClient from "./HorariosClient";
 
 export default async function HorariosPage() {
-  const clinicId = getCurrentClinicId();
+  const clinicId = await getCurrentClinicId();
 
   const clinic = await prisma.clinicSettings.upsert({
     where: { id: clinicId },
