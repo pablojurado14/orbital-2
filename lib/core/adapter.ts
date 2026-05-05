@@ -1,14 +1,18 @@
-/**
- * Adapter del clean core (Sesión 18 + 18.5 + 18.6).
+﻿/**
+ * Adapter del clean core (Sesión 18 + 18.5 + 18.6 + 19.6).
  *
  * Pieza de unión entre Prisma (DB real) y el clean core (lib/core/).
  * Vive AQUÍ por convención (lib/core/) porque es agnóstica de UI/Next, pero
- * NO es parte del core puro: importa @/lib/prisma y conoce el schema dental
- * concreto. Es deliberadamente "feo" — el core es puro, el adapter es sucio.
+ * NO es parte del core puro: conoce el schema dental concreto. Es
+ * deliberadamente "feo" — el core es puro, el adapter es sucio.
  *
  * API pública:
  *
- *   buildContextsFromDb(currentInstantMs?: number): Promise<{
+ *   buildContextsFromDb(
+ *     tx: TenantTx,
+ *     clinicId: number,
+ *     currentInstantMs?: number,
+ *   ): Promise<{
  *     state: DayState;
  *     runtimes: AppointmentRuntimeMap;
  *     contexts: CoordinatorContexts;
@@ -16,18 +20,27 @@
  *     legacyMeta: LegacyMetadata;
  *   }>
  *
- *   processEvent(event: EngineEvent, currentInstantMs?: number): Promise<CycleDecision>
+ *   processEvent(
+ *     tx: TenantTx,
+ *     clinicId: number,
+ *     event: EngineEvent,
+ *     currentInstantMs?: number,
+ *   ): Promise<CycleDecision>
  *
  *   processEventForLegacyApi(
+ *     tx: TenantTx,
+ *     clinicId: number,
  *     event: EngineEvent,
  *     persistedDecision: SuggestionDecision,
  *     legacyAppointments: Appointment[],
  *     currentInstantMs?: number,
  *   ): Promise<OrbitalState>
  *
- * Multi-tenant: await getCurrentClinicId() se llama una vez al inicio de cada
- * función pública. Todas las queries filtran por ese clinicId. Regla §7.7
- * del master.
+ * Multi-tenant (S19.6): el adapter ya NO llama getCurrentClinicId() ni
+ * importa prisma global. Recibe `tx: TenantTx` (transaction client del
+ * wrapper withClinic) y `clinicId: number` desde el caller. Todas las
+ * queries pasan por tx, lo cual permite que el SET LOCAL aplicado por
+ * withClinic active RLS Postgres en runtime contra roles no-owner.
  *
  * Sesión 18.5 — cambios:
  *   - applyEventToState pre-aplica cancellation/no_show_detected al state.
@@ -45,6 +58,13 @@
  *   - buildLegacySuggestion rellena los campos nuevos suggestion.gapEventId
  *     y suggestion.waitingCandidateId (decisión rectora 11) para que la UI
  *     pueda referenciarlos al rechazar candidata específica.
+ *
+ * Sesión 19.6 — cambios:
+ *   - API pública refactorizada para recibir TenantTx + clinicId explícitos.
+ *   - Eliminado el override globalThis __ORBITAL_OVERRIDE_CLINIC_ID__
+ *     (ahora innecesario, clinicId viene como parámetro).
+ *   - Eliminados imports de @/lib/prisma y @/lib/tenant (ya no se usan).
+ *   - DR-17 cerrada con wrapper explícito (lib/tenant-prisma.ts).
  *
  * Decisiones rectoras nuevas (S18.6):
  *   - 11: el gap se identifica por Appointment.id stringificado.
@@ -64,7 +84,7 @@
  *   - LEGACY-TRANSLATION-EVENTS-EMPTY-V1 (S18.5)
  *   - REJECTED-CANDIDATE-HOUSEKEEPING-NOT-IN-ADAPTER-V1 (S18.6)
  */
-
+ 
 import type {
   AppointmentState,
   AppointmentRuntimeStatus,
@@ -102,8 +122,7 @@ import type {
   CoordinatorOptions,
 } from "./coordinator-types";
 import { runCycle } from "./coordinator";
-import { prisma } from "@/lib/prisma";
-import { getCurrentClinicId } from "@/lib/tenant";
+import type { TenantTx } from "@/lib/tenant-prisma";
 import type {
   OrbitalState,
   Suggestion,
@@ -114,11 +133,11 @@ import type {
   AppointmentStatus,
   RankedCandidate,
 } from "@/data/mock";
-
+ 
 // =============================================================================
 // Mapping TreatmentType.name -> Procedure.code
 // =============================================================================
-
+ 
 const TT_TO_PROCEDURE_CODE: Readonly<Record<string, string>> = {
   Limpieza: "D1110",
   Revisión: "D0150",
@@ -132,15 +151,15 @@ const TT_TO_PROCEDURE_CODE: Readonly<Record<string, string>> = {
   "Curetaje periodontal": "D4341",
   Blanqueamiento: "D9972",
 };
-
+ 
 const UNKNOWN_PROCEDURE_ID = "unknown";
-
+ 
 const ADAPTER_DEFAULT_IMPROVEMENT_THRESHOLD = 0.001;
-
+ 
 // =============================================================================
 // Tipos privados
 // =============================================================================
-
+ 
 interface LegacyMetadata {
   readonly procedureNameById: Readonly<Record<ResourceId, string>>;
   readonly roomNameById: Readonly<Record<ResourceId, string>>;
@@ -149,18 +168,18 @@ interface LegacyMetadata {
   readonly waitlistDurationSlotsByEntryId: Readonly<Record<string, number>>;
   readonly waitlistValueByEntryId: Readonly<Record<string, number>>;
 }
-
+ 
 type RejectedByGap = Readonly<Record<string, ReadonlySet<string>>>;
-
+ 
 // =============================================================================
 // Helpers de timezone
 // =============================================================================
-
+ 
 function getMadridDayBoundaries(now: Date): { today: Date; tomorrow: Date } {
   const dateStringMadrid = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
   }).format(now);
-
+ 
   const offsetParts = new Intl.DateTimeFormat("en", {
     timeZone: "Europe/Madrid",
     timeZoneName: "longOffset",
@@ -168,17 +187,17 @@ function getMadridDayBoundaries(now: Date): { today: Date; tomorrow: Date } {
   const offsetStr =
     offsetParts.find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") ||
     "+00:00";
-
+ 
   const today = new Date(`${dateStringMadrid}T00:00:00${offsetStr}`);
   const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
-
+ 
   return { today, tomorrow };
 }
-
+ 
 // =============================================================================
 // Helpers de mapeo de tipos
 // =============================================================================
-
+ 
 function buildProcedureDistributionsFromActivation(
   activation: {
     learnedDurationMean: number;
@@ -196,7 +215,7 @@ function buildProcedureDistributionsFromActivation(
     p90: activation.learnedDurationP90,
   };
 }
-
+ 
 function mapStatusToRuntimeStatus(status: string): AppointmentRuntimeStatus {
   switch (status) {
     case "scheduled":
@@ -213,12 +232,12 @@ function mapStatusToRuntimeStatus(status: string): AppointmentRuntimeStatus {
       return "scheduled";
   }
 }
-
+ 
 function combineDateAndStartTime(date: Date, startTime: string): InstantUTC {
   const [hh, mm] = startTime.split(":").map(Number);
   return date.getTime() + (hh * 60 + mm) * 60_000;
 }
-
+ 
 function bigIntToInstant(bi: bigint): InstantUTC {
   const n = Number(bi);
   if (!Number.isSafeInteger(n)) {
@@ -226,13 +245,13 @@ function bigIntToInstant(bi: bigint): InstantUTC {
   }
   return n;
 }
-
+ 
 function parseWorkSchedule(json: unknown): WorkSchedule | null {
   if (json === null || json === undefined) return null;
   if (typeof json !== "object") return null;
   return json as WorkSchedule;
 }
-
+ 
 function parseCapabilityMap(json: unknown): Record<string, number> {
   if (json === null || json === undefined) return {};
   if (typeof json !== "object") return {};
@@ -243,11 +262,11 @@ function parseCapabilityMap(json: unknown): Record<string, number> {
   }
   return result;
 }
-
+ 
 // =============================================================================
 // applyEventToState
 // =============================================================================
-
+ 
 function applyEventToState(event: EngineEvent, state: DayState): DayState {
   switch (event.kind) {
     case "cancellation":
@@ -258,7 +277,7 @@ function applyEventToState(event: EngineEvent, state: DayState): DayState {
       return state;
   }
 }
-
+ 
 function markAppointmentRuntimeStatus(
   state: DayState,
   eventId: EventId,
@@ -267,7 +286,7 @@ function markAppointmentRuntimeStatus(
   const idx = state.appointments.findIndex((a) => a.eventId === eventId);
   if (idx === -1) return state;
   if (state.appointments[idx].runtimeStatus === targetStatus) return state;
-
+ 
   const updatedAppointment: AppointmentState = {
     ...state.appointments[idx],
     runtimeStatus: targetStatus,
@@ -279,11 +298,11 @@ function markAppointmentRuntimeStatus(
   ];
   return { ...state, appointments: newAppointments };
 }
-
+ 
 // =============================================================================
 // Filtrado de waitlist por candidatas rechazadas (S18.6)
 // =============================================================================
-
+ 
 function filterWaitlistByRejectedCandidates(
   contexts: CoordinatorContexts,
   rejectedByGap: RejectedByGap,
@@ -292,14 +311,14 @@ function filterWaitlistByRejectedCandidates(
   if (gapEventId === null) return contexts;
   const rejectedSet = rejectedByGap[gapEventId];
   if (rejectedSet === undefined || rejectedSet.size === 0) return contexts;
-
+ 
   const filteredCandidates = contexts.generation.waitlist.candidates.filter(
     (c) => !rejectedSet.has(c.id),
   );
   if (filteredCandidates.length === contexts.generation.waitlist.candidates.length) {
     return contexts;
   }
-
+ 
   return {
     ...contexts,
     generation: {
@@ -308,19 +327,21 @@ function filterWaitlistByRejectedCandidates(
     },
   };
 }
-
+ 
 function extractGapEventId(event: EngineEvent): string | null {
   if (event.kind === "cancellation") {
     return event.eventId;
   }
   return null;
 }
-
+ 
 // =============================================================================
 // API pública — buildContextsFromDb
 // =============================================================================
-
+ 
 export async function buildContextsFromDb(
+  tx: TenantTx,
+  clinicId: number,
   currentInstantMs?: number,
 ): Promise<{
   state: DayState;
@@ -329,7 +350,7 @@ export async function buildContextsFromDb(
   coordinatorOptions: CoordinatorOptions;
   legacyMeta: LegacyMetadata;
 }> {
-  const result = await buildContextsFromDbInternal(currentInstantMs);
+  const result = await buildContextsFromDbInternal(tx, clinicId, currentInstantMs);
   return {
     state: result.state,
     runtimes: result.runtimes,
@@ -338,8 +359,10 @@ export async function buildContextsFromDb(
     legacyMeta: result.legacyMeta,
   };
 }
-
+ 
 async function buildContextsFromDbInternal(
+  tx: TenantTx,
+  clinicId: number,
   currentInstantMs?: number,
 ): Promise<{
   state: DayState;
@@ -349,14 +372,10 @@ async function buildContextsFromDbInternal(
   legacyMeta: LegacyMetadata;
   rejectedByGap: RejectedByGap;
 }> {
-  const clinicId = currentInstantMs !== undefined && (globalThis as { __ORBITAL_OVERRIDE_CLINIC_ID__?: number }).__ORBITAL_OVERRIDE_CLINIC_ID__ !== undefined
-    ? (globalThis as { __ORBITAL_OVERRIDE_CLINIC_ID__?: number }).__ORBITAL_OVERRIDE_CLINIC_ID__!
-    : await getCurrentClinicId();
-  
   const now = currentInstantMs !== undefined ? new Date(currentInstantMs) : new Date();
-
+ 
   const { today: todayStart, tomorrow: todayEnd } = getMadridDayBoundaries(now);
-
+ 
   const [
     appointmentsRaw,
     dentistsRaw,
@@ -367,7 +386,7 @@ async function buildContextsFromDbInternal(
     clinicSettingsRaw,
     rejectedCandidatesRaw,
   ] = await Promise.all([
-    prisma.appointment.findMany({
+    tx.appointment.findMany({
       where: { clinicId, date: { gte: todayStart, lt: todayEnd } },
       include: {
         treatmentType: true,
@@ -376,22 +395,22 @@ async function buildContextsFromDbInternal(
       },
       orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
     }),
-    prisma.dentist.findMany({
+    tx.dentist.findMany({
       where: { clinicId, active: true },
     }),
-    prisma.gabinete.findMany({
+    tx.gabinete.findMany({
       where: { clinicId, active: true },
       include: { equipment: { include: { equipment: true } } },
     }),
-    prisma.equipment.findMany({
+    tx.equipment.findMany({
       where: { clinicId, active: true },
       include: { compatibleRooms: true },
     }),
-    prisma.procedureActivation.findMany({
+    tx.procedureActivation.findMany({
       where: { clinicId, active: true },
       include: { procedure: true },
     }),
-    prisma.waitlistEntry.findMany({
+    tx.waitlistEntry.findMany({
       where: { clinicId, availableNow: true },
       include: {
         patient: true,
@@ -399,16 +418,16 @@ async function buildContextsFromDbInternal(
         desiredTreatmentType: true,
       },
     }),
-    prisma.clinicSettings.findUnique({
+    tx.clinicSettings.findUnique({
       where: { id: clinicId },
       select: { umbralDisparoProactivo: true },
     }),
-    prisma.rejectedCandidate.findMany({
+    tx.rejectedCandidate.findMany({
       where: { clinicId },
       select: { gapEventId: true, waitingCandidateId: true },
     }),
   ]);
-
+ 
   const rejectedByGapMutable: Record<string, Set<string>> = {};
   for (const r of rejectedCandidatesRaw) {
     if (rejectedByGapMutable[r.gapEventId] === undefined) {
@@ -417,7 +436,7 @@ async function buildContextsFromDbInternal(
     rejectedByGapMutable[r.gapEventId].add(r.waitingCandidateId);
   }
   const rejectedByGap: RejectedByGap = rejectedByGapMutable;
-
+ 
   const procedureIdByCode: Record<string, number> = {};
   const procedureRequirementsById: Record<ResourceId, ProcedureRequirements> = {};
   const distributionsByProcedureId: Record<ResourceId, ProcedureDistributions> = {};
@@ -429,15 +448,15 @@ async function buildContextsFromDbInternal(
     }
   }
   const procedureNameById: Record<ResourceId, string> = {};
-
+ 
   for (const act of proceduresWithActivationsRaw) {
     const proc = act.procedure;
     procedureIdByCode[proc.code] = proc.id;
-
+ 
     const procIdStr = String(proc.id);
     procedureNameById[procIdStr] =
       ttNameByProcedureCode[proc.code] ?? proc.code;
-
+ 
     procedureRequirementsById[procIdStr] = {
       procedureId: procIdStr,
       procedureCode: proc.code,
@@ -459,22 +478,22 @@ async function buildContextsFromDbInternal(
       requiresAuxiliary: proc.requiresAuxiliary,
       precondition: null,
     };
-
+ 
     distributionsByProcedureId[procIdStr] =
       buildProcedureDistributionsFromActivation(act);
-
+ 
     if (act.price !== null) {
       priceByProcedureId[procIdStr] = act.price;
     }
   }
-
+ 
   const professionals: ProfessionalCapabilities[] = dentistsRaw.map((d) => ({
     professionalId: String(d.id),
     capabilities: parseCapabilityMap(d.capabilities),
     workSchedule: parseWorkSchedule(d.workSchedule),
     hourlyCost: d.hourlyCost,
   }));
-
+ 
   const rooms: RoomCapabilities[] = gabinetesRaw.map((g) => {
     const derived: Record<string, boolean> = {};
     for (const er of g.equipment) {
@@ -488,19 +507,19 @@ async function buildContextsFromDbInternal(
       derivedCapabilities: derived,
     };
   });
-
+ 
   const roomNameById: Record<ResourceId, string> = {};
   for (const g of gabinetesRaw) {
     roomNameById[String(g.id)] = g.name;
   }
-
+ 
   const equipment: EquipmentInfo[] = equipmentRaw.map((e) => ({
     equipmentId: String(e.id),
     equipmentType: e.type,
     modality: e.modality,
     compatibleRoomIds: e.compatibleRooms.map((cr) => String(cr.gabineteId)),
   }));
-
+ 
   function resolveProcedureIdForAppointment(
     treatmentTypeName: string,
   ): ResourceId {
@@ -510,15 +529,15 @@ async function buildContextsFromDbInternal(
     if (id === undefined) return UNKNOWN_PROCEDURE_ID;
     return String(id);
   }
-
+ 
   const appointments: AppointmentState[] = [];
   const runtimes: Record<EventId, AppointmentRuntime> = {};
-
+ 
   for (const a of appointmentsRaw) {
     const eventIdStr = String(a.id);
     const startMs = combineDateAndStartTime(a.date, a.startTime);
     const procedureId = resolveProcedureIdForAppointment(a.treatmentType.name);
-
+ 
     let estimatedEndDistribution: DurationDistribution;
     if (procedureId === UNKNOWN_PROCEDURE_ID) {
       const durationMs = a.duration * 60_000;
@@ -548,7 +567,7 @@ async function buildContextsFromDbInternal(
       };
       estimatedEndDistribution = predictDuration(ctx);
     }
-
+ 
     const patientScores: PatientPredictiveScores = {
       patientId: String(a.patientId),
       noShowScore: a.patient.noShowScore,
@@ -564,7 +583,7 @@ async function buildContextsFromDbInternal(
         ? Math.min(0.5, (latenessDist.p90 - TEN_MIN_MS) / (TEN_MIN_MS * 5))
         : 0;
     const overrunProbability = 0;
-
+ 
     appointments.push({
       eventId: eventIdStr,
       runtimeStatus: mapStatusToRuntimeStatus(a.status),
@@ -575,7 +594,7 @@ async function buildContextsFromDbInternal(
         significantLatenessProbability,
       },
     });
-
+ 
     runtimes[eventIdStr] = {
       eventId: eventIdStr,
       professionalId: String(a.dentistId),
@@ -591,7 +610,7 @@ async function buildContextsFromDbInternal(
       })),
     };
   }
-
+ 
   const emptyKPIs: KPIVector = {
     effectiveUtilization: 0,
     expectedOvertime: 0,
@@ -625,12 +644,12 @@ async function buildContextsFromDbInternal(
     pendingEvents: [],
     currentProjectedKPIs: emptyKPIs,
   };
-
+ 
   const patientNameByWaitlistEntryId: Record<string, string> = {};
   const waitlistTreatmentByEntryId: Record<string, string> = {};
   const waitlistDurationSlotsByEntryId: Record<string, number> = {};
   const waitlistValueByEntryId: Record<string, number> = {};
-
+ 
   const waitingCandidates = waitlistRaw.map((w) => {
     let procedureIdStr: string | undefined;
     if (w.desiredProcedureId !== null) {
@@ -642,7 +661,7 @@ async function buildContextsFromDbInternal(
         if (id !== undefined) procedureIdStr = String(id);
       }
     }
-
+ 
     const wIdStr = String(w.id);
     patientNameByWaitlistEntryId[wIdStr] = w.patient.name;
     let treatmentDisplay = "Sin tratamiento";
@@ -654,8 +673,8 @@ async function buildContextsFromDbInternal(
     waitlistTreatmentByEntryId[wIdStr] = treatmentDisplay;
     waitlistDurationSlotsByEntryId[wIdStr] = w.durationSlots;
     waitlistValueByEntryId[wIdStr] = w.value;
-
-
+ 
+ 
     return {
       id: wIdStr,
       preferredResourceId: undefined,
@@ -675,7 +694,7 @@ async function buildContextsFromDbInternal(
       })(),
     };
   });
-
+ 
   const validation = {
     runtimes,
     professionals,
@@ -684,7 +703,7 @@ async function buildContextsFromDbInternal(
     proceduresById: procedureRequirementsById,
     patientHistoryById: {} as Readonly<Record<ResourceId, PatientHistory>>,
   };
-
+ 
   const contexts: CoordinatorContexts = {
     generation: {
       validation,
@@ -711,14 +730,14 @@ async function buildContextsFromDbInternal(
       priceByProcedureId,
     },
   };
-
+ 
   const improvementThreshold =
     clinicSettingsRaw?.umbralDisparoProactivo ??
     ADAPTER_DEFAULT_IMPROVEMENT_THRESHOLD;
   const coordinatorOptions: CoordinatorOptions = {
     improvementThreshold,
   };
-
+ 
   const legacyMeta: LegacyMetadata = {
     procedureNameById,
     roomNameById,
@@ -727,7 +746,7 @@ async function buildContextsFromDbInternal(
     waitlistDurationSlotsByEntryId,
     waitlistValueByEntryId,
   };
-
+ 
   return {
     state,
     runtimes,
@@ -737,17 +756,19 @@ async function buildContextsFromDbInternal(
     rejectedByGap,
   };
 }
-
+ 
 // =============================================================================
 // API pública — processEvent
 // =============================================================================
-
+ 
 export async function processEvent(
+  tx: TenantTx,
+  clinicId: number,
   event: EngineEvent,
   currentInstantMs?: number,
 ): Promise<CycleDecision> {
   const { state, runtimes, contexts, coordinatorOptions, rejectedByGap } =
-    await buildContextsFromDbInternal(currentInstantMs);
+    await buildContextsFromDbInternal(tx, clinicId, currentInstantMs);
   const stateAfterEvent = applyEventToState(event, state);
   const filteredContexts = filterWaitlistByRejectedCandidates(
     contexts,
@@ -762,19 +783,21 @@ export async function processEvent(
     coordinatorOptions,
   );
 }
-
+ 
 // =============================================================================
 // API pública — processEventForLegacyApi
 // =============================================================================
-
+ 
 export async function processEventForLegacyApi(
+  tx: TenantTx,
+  clinicId: number,
   event: EngineEvent,
   persistedDecision: SuggestionDecision,
   legacyAppointments: Appointment[],
   currentInstantMs?: number,
 ): Promise<OrbitalState> {
   const { state, runtimes, contexts, coordinatorOptions, legacyMeta, rejectedByGap } =
-    await buildContextsFromDbInternal(currentInstantMs);
+    await buildContextsFromDbInternal(tx, clinicId, currentInstantMs);
   const stateAfterEvent = applyEventToState(event, state);
   const filteredContexts = filterWaitlistByRejectedCandidates(
     contexts,
@@ -798,11 +821,11 @@ export async function processEventForLegacyApi(
     legacyAppointments,
   );
 }
-
+ 
 // =============================================================================
 // Helpers privados de traducción CycleDecision -> OrbitalState
 // =============================================================================
-
+ 
 function cycleDecisionToOrbitalState(
   decision: CycleDecision,
   event: EngineEvent,
@@ -833,7 +856,7 @@ function cycleDecisionToOrbitalState(
       decision: persistedDecision,
     };
   }
-
+ 
   const suggestion = buildLegacySuggestion(
     decision,
     event,
@@ -841,7 +864,7 @@ function cycleDecisionToOrbitalState(
     contexts,
     legacyMeta,
   );
-
+ 
   if (suggestion === null) {
     return {
       appointments: legacyAppointments,
@@ -859,7 +882,7 @@ function cycleDecisionToOrbitalState(
       decision: persistedDecision,
     };
   }
-
+ 
   const appointmentsWithSuggestion = buildLegacyAppointmentsView(
     legacyAppointments,
     suggestion,
@@ -871,7 +894,7 @@ function cycleDecisionToOrbitalState(
     contexts,
     legacyMeta,
   );
-
+ 
   if (persistedDecision === "accepted") {
     return {
       appointments: appointmentsWithSuggestion,
@@ -884,7 +907,7 @@ function cycleDecisionToOrbitalState(
       decision: persistedDecision,
     };
   }
-
+ 
   return {
     appointments: appointmentsWithSuggestion,
     suggestion,
@@ -896,7 +919,7 @@ function cycleDecisionToOrbitalState(
     decision: persistedDecision,
   };
 }
-
+ 
 function buildLegacySuggestion(
   decision: CycleDecision,
   event: EngineEvent,
@@ -911,15 +934,15 @@ function buildLegacySuggestion(
   if (fillPrimitive === undefined || fillPrimitive.kind !== "fill_from_waitlist") {
     return null;
   }
-
+ 
   const gapEventId = findCancelledEventIdForGap(event, runtimes, contexts);
   if (gapEventId === null) return null;
   const gapRuntime = runtimes[gapEventId];
   if (gapRuntime === undefined) return null;
-
+ 
   const startTime = formatStartTimeMadrid(gapRuntime.start);
   const gabineteName = legacyMeta.roomNameById[gapRuntime.roomId] ?? "—";
-
+ 
   const waitingCandidateId = fillPrimitive.waitingCandidateId;
   const patientName =
     legacyMeta.patientNameByWaitlistEntryId[waitingCandidateId] ?? "Paciente";
@@ -929,7 +952,7 @@ function buildLegacySuggestion(
     legacyMeta.waitlistDurationSlotsByEntryId[waitingCandidateId] ??
     Math.max(1, Math.round(gapRuntime.plannedDuration / (30 * 60_000)));
   const value = legacyMeta.waitlistValueByEntryId[waitingCandidateId] ?? 0;
-
+ 
   return {
     start: startTime,
     gabinete: gabineteName,
@@ -944,7 +967,7 @@ function buildLegacySuggestion(
     waitingCandidateId,
   };
 }
-
+ 
 function findCancelledEventIdForGap(
   event: EngineEvent,
   runtimes: AppointmentRuntimeMap,
@@ -957,7 +980,7 @@ function findCancelledEventIdForGap(
   void runtimes;
   return null;
 }
-
+ 
 function buildLegacyAppointmentsView(
   legacyAppointments: Appointment[],
   suggestion: Suggestion,
@@ -989,14 +1012,14 @@ function buildLegacyAppointmentsView(
   };
   return [...filtered, suggestionAsAppointment];
 }
-
+ 
 function buildLegacyRankedCandidates(
   decision: CycleDecision,
   contexts: CoordinatorContexts,
   legacyMeta: LegacyMetadata,
 ): RankedCandidate[] {
   const result: RankedCandidate[] = [];
-
+ 
   if (decision.proposal !== null) {
     const fillPrimitive = decision.proposal.find(
       (p) => p.kind === "fill_from_waitlist",
@@ -1012,7 +1035,7 @@ function buildLegacyRankedCandidates(
       if (winner !== null) result.push(winner);
     }
   }
-
+ 
   for (const alt of decision.explanation.consideredAlternatives) {
     const fillPrim = alt.action.find((p) => p.kind === "fill_from_waitlist");
     if (fillPrim === undefined || fillPrim.kind !== "fill_from_waitlist") continue;
@@ -1028,12 +1051,12 @@ function buildLegacyRankedCandidates(
     );
     if (altCandidate !== null) result.push(altCandidate);
   }
-
+ 
   void contexts;
-
+ 
   return result;
 }
-
+ 
 function candidateMatchesWaitlistId(
   rc: RankedCandidate,
   waitlistEntryId: string,
@@ -1042,7 +1065,7 @@ function candidateMatchesWaitlistId(
   const expectedName = legacyMeta.patientNameByWaitlistEntryId[waitlistEntryId];
   return expectedName !== undefined && rc.name === expectedName;
 }
-
+ 
 function waitlistEntryToRankedCandidate(
   waitlistEntryId: string,
   totalScore: number,
@@ -1056,7 +1079,7 @@ function waitlistEntryToRankedCandidate(
   const durationSlots =
     legacyMeta.waitlistDurationSlotsByEntryId[waitlistEntryId] ?? 1;
   const value = legacyMeta.waitlistValueByEntryId[waitlistEntryId] ?? 0;
-
+ 
   return {
     name,
     treatment,
@@ -1074,7 +1097,7 @@ function waitlistEntryToRankedCandidate(
     },
   };
 }
-
+ 
 function translateMotiveCode(motiveCode: string): string {
   switch (motiveCode) {
     case "FILLS_GAP_WITH_VALUE":
@@ -1097,7 +1120,7 @@ function translateMotiveCode(motiveCode: string): string {
       return "Mejora estimada sobre el estado actual.";
   }
 }
-
+ 
 function translateDiscardReason(discardCode: string | undefined): string {
   switch (discardCode) {
     case "WORSE_THAN_NO_OP":
@@ -1118,7 +1141,7 @@ function translateDiscardReason(discardCode: string | undefined): string {
       return "Descartada.";
   }
 }
-
+ 
 function buildRecommendationReason(
   decision: CycleDecision,
   suggestion: Suggestion,
@@ -1126,7 +1149,7 @@ function buildRecommendationReason(
   const motiveText = translateMotiveCode(decision.explanation.motiveCode);
   return `${suggestion.patient}: ${motiveText}`;
 }
-
+ 
 function formatStartTimeMadrid(instantMs: InstantUTC): string {
   const fmt = new Intl.DateTimeFormat("es-ES", {
     timeZone: "Europe/Madrid",

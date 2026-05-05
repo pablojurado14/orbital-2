@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
+import { withClinic, type TenantTx } from "@/lib/tenant-prisma";
 import { seed } from "@/lib/seed";
 import type { SuggestionDecision } from "@/lib/types/orbital-state";
 import { AppointmentStatus, HOURS } from "@/data/mock";
@@ -10,17 +11,23 @@ import {
 } from "@/lib/dashboard-metrics";
 import { processEventForLegacyApi } from "@/lib/core/adapter";
 import type { EngineEvent } from "@/lib/core/types";
-
+ 
 // =============================================================================
 // Sesión 18.5 — Flag flippeado: el motor v2.0 (clean core) sirve respuestas
 // Sesión 18.6 — Iteración de candidatas vía RejectedCandidate
 // Sesión 19.B — Limpiado bloque muerto waitingPatientsRaw/waitingList:
 //                 el clean core ya lee WaitlistEntry vía adapter.
+// Sesión 19.6 — RLS Postgres + wrapper withClinic. Toda la lógica del request
+//                 se ejecuta dentro de una transacción con SET LOCAL aplicado
+//                 por withClinic, lo cual activa RLS en runtime contra roles
+//                 no-owner. Bootstrap (ensureClinicExists) queda fuera porque
+//                 seed() todavía usa prisma global (deuda
+//                 SEED-NOT-USING-WITHCLINIC-V1, S19.7+).
 // =============================================================================
-
+ 
 const USE_CLEAN_CORE = true;
 const SHADOW_MODE = false;
-
+ 
 if (!USE_CLEAN_CORE) {
   throw new Error(
     "Sesión 18.5: USE_CLEAN_CORE debe estar a true. La rama legacy se eliminó " +
@@ -28,7 +35,7 @@ if (!USE_CLEAN_CORE) {
   );
 }
 void SHADOW_MODE;
-
+ 
 type AppointmentView = {
   id: number;
   start: string;
@@ -39,14 +46,14 @@ type AppointmentView = {
   status: AppointmentStatus;
   value: number;
 };
-
+ 
 function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const now = new Date();
-
+ 
   const dateStringMadrid = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
   }).format(now);
-
+ 
   const offsetParts = new Intl.DateTimeFormat("en", {
     timeZone: "Europe/Madrid",
     timeZoneName: "longOffset",
@@ -54,46 +61,63 @@ function getMadridDayBoundaries(): { today: Date; tomorrow: Date } {
   const offsetStr =
     offsetParts.find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") ||
     "+00:00";
-
+ 
   const today = new Date(`${dateStringMadrid}T00:00:00${offsetStr}`);
   const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
-
+ 
   return { today, tomorrow };
 }
-
-async function purgeStaleRejectedCandidates(clinicId: number): Promise<void> {
+ 
+// =============================================================================
+// Bootstrap (FUERA de withClinic).
+// seed() usa prisma global y crea ClinicSettings, que no tiene RLS.
+// Refactor de seed para tomar tx queda como deuda S19.7+.
+// =============================================================================
+ 
+async function ensureClinicExists(clinicId: number): Promise<void> {
+  const clinic = await prisma.clinicSettings.findUnique({
+    where: { id: clinicId },
+  });
+  if (!clinic) {
+    await seed();
+  }
+}
+ 
+// =============================================================================
+// Helpers que viven DENTRO de withClinic (reciben tx + clinicId).
+// Las queries pasan por tx para que SET LOCAL aplicado por withClinic
+// active RLS Postgres contra roles no-owner.
+// =============================================================================
+ 
+async function purgeStaleRejectedCandidates(
+  tx: TenantTx,
+  clinicId: number,
+): Promise<void> {
   const { today } = getMadridDayBoundaries();
-  await prisma.rejectedCandidate.deleteMany({
+  await tx.rejectedCandidate.deleteMany({
     where: {
       clinicId,
       rejectedAt: { lt: today },
     },
   });
 }
-
-async function ensureSeeded() {
-  const clinicId = await getCurrentClinicId();
-  const clinic = await prisma.clinicSettings.findUnique({ where: { id: clinicId } });
-
-  if (!clinic) {
-    await seed();
-  }
-
-  await prisma.runtimeState.upsert({
+ 
+async function ensureRuntimeStatePending(
+  tx: TenantTx,
+  clinicId: number,
+): Promise<void> {
+  await tx.runtimeState.upsert({
     where: { id: clinicId },
     update: {},
     create: { id: clinicId, suggestionDecision: "pending", clinicId },
   });
-
-  await purgeStaleRejectedCandidates(clinicId);
 }
-
-async function loadStateData() {
-  const clinicId = await getCurrentClinicId();
+ 
+async function loadStateData(tx: TenantTx, clinicId: number) {
   const { today, tomorrow } = getMadridDayBoundaries();
-
+ 
   const [appointmentsRaw, gabinetesRaw, runtime] = await Promise.all([
-    prisma.appointment.findMany({
+    tx.appointment.findMany({
       where: {
         clinicId,
         date: {
@@ -109,13 +133,13 @@ async function loadStateData() {
       },
       orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
     }),
-    prisma.gabinete.findMany({
+    tx.gabinete.findMany({
       where: { clinicId, active: true },
       orderBy: { name: "asc" },
     }),
-    prisma.runtimeState.findUnique({ where: { id: clinicId } }),
+    tx.runtimeState.findUnique({ where: { id: clinicId } }),
   ]);
-
+ 
   const appointmentsView: AppointmentView[] = appointmentsRaw.map((a) => ({
     id: a.id,
     start: a.startTime,
@@ -126,12 +150,12 @@ async function loadStateData() {
     status: a.status as AppointmentStatus,
     value: a.value ?? a.treatmentType?.price ?? 0,
   }));
-
+ 
   const gabinetes = gabinetesRaw.map((g) => g.name);
   const decision = (runtime?.suggestionDecision ?? "pending") as SuggestionDecision;
-
+ 
   const totalAvailableSlots = gabinetesRaw.length * Math.floor(HOURS.length / 2);
-
+ 
   return {
     appointmentsRaw,
     appointmentsView,
@@ -140,7 +164,7 @@ async function loadStateData() {
     totalAvailableSlots,
   };
 }
-
+ 
 function synthesizeEventFromState(
   appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
   clinicId: number,
@@ -162,8 +186,9 @@ function synthesizeEventFromState(
     tenantId,
   };
 }
-
+ 
 async function buildResponseFromCleanCore(
+  tx: TenantTx,
   clinicId: number,
   appointmentsRaw: ReadonlyArray<{ id: number; status: string }>,
   appointmentsView: AppointmentView[],
@@ -179,61 +204,90 @@ async function buildResponseFromCleanCore(
     status: a.status,
     value: a.value,
   }));
-  return processEventForLegacyApi(event, decision, legacyAppointments);
-}
-
-export async function GET() {
-  await ensureSeeded();
-  const clinicId = await getCurrentClinicId();
-
-  const {
-    appointmentsRaw,
-    appointmentsView,
-    gabinetes,
-    decision,
-    totalAvailableSlots,
-  } = await loadStateData();
-
-  const state = await buildResponseFromCleanCore(
+  return processEventForLegacyApi(
+    tx,
     clinicId,
-    appointmentsRaw,
-    appointmentsView,
+    event,
     decision,
+    legacyAppointments,
   );
-
-  const metrics = {
-    appointmentsCount: countTodayAppointments(appointmentsView),
-    occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
-    recoveredGaps: state.recoveredGaps,
-    recoveredRevenue: state.recoveredRevenue,
-  };
-
-  return NextResponse.json({ ...state, gabinetes, metrics });
 }
-
-export async function POST(request: NextRequest) {
-  await ensureSeeded();
+ 
+// =============================================================================
+// GET handler
+// =============================================================================
+ 
+export async function GET() {
   const clinicId = await getCurrentClinicId();
-
+  await ensureClinicExists(clinicId);
+ 
+  const response = await withClinic(clinicId, async (tx) => {
+    await ensureRuntimeStatePending(tx, clinicId);
+    await purgeStaleRejectedCandidates(tx, clinicId);
+ 
+    const {
+      appointmentsRaw,
+      appointmentsView,
+      gabinetes,
+      decision,
+      totalAvailableSlots,
+    } = await loadStateData(tx, clinicId);
+ 
+    const state = await buildResponseFromCleanCore(
+      tx,
+      clinicId,
+      appointmentsRaw,
+      appointmentsView,
+      decision,
+    );
+ 
+    const metrics = {
+      appointmentsCount: countTodayAppointments(appointmentsView),
+      occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
+      recoveredGaps: state.recoveredGaps,
+      recoveredRevenue: state.recoveredRevenue,
+    };
+ 
+    return { ...state, gabinetes, metrics };
+  });
+ 
+  return NextResponse.json(response);
+}
+ 
+// =============================================================================
+// POST handler
+// =============================================================================
+ 
+export async function POST(request: NextRequest) {
+  const clinicId = await getCurrentClinicId();
+  await ensureClinicExists(clinicId);
+ 
   const body = await request.json();
   const action = body?.action as
     | SuggestionDecision
     | "reset"
     | "reject_candidate";
-
-  if (action === "reset") {
-    await prisma.runtimeState.upsert({
-      where: { id: clinicId },
-      update: { suggestionDecision: "pending" },
-      create: { id: clinicId, suggestionDecision: "pending", clinicId },
-    });
-    await prisma.rejectedCandidate.deleteMany({ where: { clinicId } });
-  } else if (action === "reject_candidate") {
-    const gapEventId = body?.gapEventId;
-    const waitingCandidateId = body?.waitingCandidateId;
+ 
+  // Pre-validación de action ANTES de abrir transacción.
+  if (
+    action !== "reset" &&
+    action !== "reject_candidate" &&
+    action !== "accepted" &&
+    action !== "rejected" &&
+    action !== "pending"
+  ) {
+    return NextResponse.json({ error: "Acción no válida" }, { status: 400 });
+  }
+ 
+  // Pre-validación de payload para reject_candidate.
+  let rejectGapEventId: string | undefined;
+  let rejectWaitingCandidateId: string | undefined;
+  if (action === "reject_candidate") {
+    rejectGapEventId = body?.gapEventId;
+    rejectWaitingCandidateId = body?.waitingCandidateId;
     if (
-      typeof gapEventId !== "string" ||
-      typeof waitingCandidateId !== "string"
+      typeof rejectGapEventId !== "string" ||
+      typeof rejectWaitingCandidateId !== "string"
     ) {
       return NextResponse.json(
         {
@@ -243,51 +297,68 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
-    try {
-      await prisma.rejectedCandidate.create({
-        data: { clinicId, gapEventId, waitingCandidateId },
-      });
-    } catch (e: unknown) {
-      const code = (e as { code?: string }).code;
-      if (code !== "P2002") {
-        throw e;
-      }
-    }
-  } else if (
-    action === "accepted" ||
-    action === "rejected" ||
-    action === "pending"
-  ) {
-    await prisma.runtimeState.upsert({
-      where: { id: clinicId },
-      update: { suggestionDecision: action },
-      create: { id: clinicId, suggestionDecision: action, clinicId },
-    });
-  } else {
-    return NextResponse.json({ error: "Acción no válida" }, { status: 400 });
   }
-
-  const {
-    appointmentsRaw,
-    appointmentsView,
-    gabinetes,
-    decision,
-    totalAvailableSlots,
-  } = await loadStateData();
-
-  const state = await buildResponseFromCleanCore(
-    clinicId,
-    appointmentsRaw,
-    appointmentsView,
-    decision,
-  );
-
-  const metrics = {
-    appointmentsCount: countTodayAppointments(appointmentsView),
-    occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
-    recoveredGaps: state.recoveredGaps,
-    recoveredRevenue: state.recoveredRevenue,
-  };
-
-  return NextResponse.json({ ...state, gabinetes, metrics });
+ 
+  const response = await withClinic(clinicId, async (tx) => {
+    await ensureRuntimeStatePending(tx, clinicId);
+    await purgeStaleRejectedCandidates(tx, clinicId);
+ 
+    if (action === "reset") {
+      await tx.runtimeState.upsert({
+        where: { id: clinicId },
+        update: { suggestionDecision: "pending" },
+        create: { id: clinicId, suggestionDecision: "pending", clinicId },
+      });
+      await tx.rejectedCandidate.deleteMany({ where: { clinicId } });
+    } else if (action === "reject_candidate") {
+      try {
+        await tx.rejectedCandidate.create({
+          data: {
+            clinicId,
+            gapEventId: rejectGapEventId!,
+            waitingCandidateId: rejectWaitingCandidateId!,
+          },
+        });
+      } catch (e: unknown) {
+        const code = (e as { code?: string }).code;
+        if (code !== "P2002") {
+          throw e;
+        }
+      }
+    } else {
+      // accepted / rejected / pending
+      await tx.runtimeState.upsert({
+        where: { id: clinicId },
+        update: { suggestionDecision: action },
+        create: { id: clinicId, suggestionDecision: action, clinicId },
+      });
+    }
+ 
+    const {
+      appointmentsRaw,
+      appointmentsView,
+      gabinetes,
+      decision,
+      totalAvailableSlots,
+    } = await loadStateData(tx, clinicId);
+ 
+    const state = await buildResponseFromCleanCore(
+      tx,
+      clinicId,
+      appointmentsRaw,
+      appointmentsView,
+      decision,
+    );
+ 
+    const metrics = {
+      appointmentsCount: countTodayAppointments(appointmentsView),
+      occupancy: calculateOccupancy(appointmentsView, totalAvailableSlots),
+      recoveredGaps: state.recoveredGaps,
+      recoveredRevenue: state.recoveredRevenue,
+    };
+ 
+    return { ...state, gabinetes, metrics };
+  });
+ 
+  return NextResponse.json(response);
 }
