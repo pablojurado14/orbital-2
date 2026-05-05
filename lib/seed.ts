@@ -1,6 +1,14 @@
 import { prisma } from "./prisma";
 import bcrypt from "bcryptjs";
 
+const CAPABILITIES_BY_SPECIALTY: Record<string, Record<string, number>> = {
+  "Odontología general": { general: 1 },
+  "Endodoncia":          { general: 1, endo: 1 },
+  "Implantología":       { general: 1, implant: 1 },
+  "Ortodoncia":          { general: 1, ortho: 1 },
+  "Periodoncia":         { general: 1, perio: 1 },
+};
+
 export async function seed() {
   // 1. Clínica única (id=1) — base del tenant
   const clinic = await prisma.clinicSettings.upsert({
@@ -37,10 +45,32 @@ export async function seed() {
   ]);
 
   // 4. Dentistas
+  // 4. Dentistas
   const [drGarcia, drRuiz, drMendez] = await Promise.all([
-    prisma.dentist.create({ data: { name: "Dra. García", specialty: "Odontología general", clinicId } }),
-    prisma.dentist.create({ data: { name: "Dr. Ruiz",    specialty: "Endodoncia",          clinicId } }),
-    prisma.dentist.create({ data: { name: "Dra. Méndez", specialty: "Implantología",       clinicId } }),
+    prisma.dentist.create({
+      data: {
+        name: "Dra. García",
+        specialty: "Odontología general",
+        capabilities: CAPABILITIES_BY_SPECIALTY["Odontología general"],
+        clinicId,
+      },
+    }),
+    prisma.dentist.create({
+      data: {
+        name: "Dr. Ruiz",
+        specialty: "Endodoncia",
+        capabilities: CAPABILITIES_BY_SPECIALTY["Endodoncia"],
+        clinicId,
+      },
+    }),
+    prisma.dentist.create({
+      data: {
+        name: "Dra. Méndez",
+        specialty: "Implantología",
+        capabilities: CAPABILITIES_BY_SPECIALTY["Implantología"],
+        clinicId,
+      },
+    }),
   ]);
 
   // 5. Tratamientos

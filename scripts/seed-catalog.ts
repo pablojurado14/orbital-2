@@ -22,6 +22,18 @@
 import { prisma } from "../lib/prisma";
 import { getCurrentClinicId } from "../lib/tenant";
 
+const PRICE_BY_CODE: Record<string, number> = {
+  D0150: 45,
+  D1110: 70,
+  D2391: 120,
+  D3310: 180,
+  D6010: 400,
+  D7140: 80,
+  D7240: 250,
+  D4341: 90,
+  D9972: 300,
+};
+
 // ============================================================
 // Tipos JSON-safe (compatibles con Prisma InputJsonValue)
 // ============================================================
@@ -544,18 +556,19 @@ async function main() {
     const allProcedures = await prisma.procedure.findMany({ where: { active: true } });
     let activationsCreated = 0;
     for (const proc of allProcedures) {
+      const price = PRICE_BY_CODE[proc.code];
       await prisma.procedureActivation.create({
         data: {
           clinicId,
           procedureId: proc.id,
-          active: true,
-          // Cold start: learned = reference (se ajustará con datos reales)
+          active: price !== undefined,
           learnedDurationMean: proc.referenceDurationMean,
           learnedDurationStdDev: proc.referenceDurationStdDev,
           learnedDurationP10: proc.referenceDurationP10,
           learnedDurationP50: proc.referenceDurationP50,
           learnedDurationP90: proc.referenceDurationP90,
           currency: "EUR",
+          ...(price !== undefined && { price }),
         },
       });
       activationsCreated++;
