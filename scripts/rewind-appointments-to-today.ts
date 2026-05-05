@@ -21,7 +21,7 @@
  * generen dia a dia.
  */
 
-import { prisma } from "../lib/prisma";
+import { prismaAdmin as prisma } from "../lib/prisma";
 import { getCurrentClinicId } from "../lib/tenant";
 
 /**

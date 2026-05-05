@@ -2,11 +2,11 @@ import { prismaAdmin as prisma } from "./prisma";
 import bcrypt from "bcryptjs";
 
 const CAPABILITIES_BY_SPECIALTY: Record<string, Record<string, number>> = {
-  "Odontología general": { general: 1 },
-  "Endodoncia":          { general: 1, endo: 1 },
-  "Implantología":       { general: 1, implant: 1 },
-  "Ortodoncia":          { general: 1, ortho: 1 },
-  "Periodoncia":         { general: 1, perio: 1 },
+  "Odontología general": { general_dentistry: 1 },
+  "Endodoncia":          { general_dentistry: 1, endodontics: 1 },
+  "Implantología":       { general_dentistry: 1, implantology: 1 },
+  "Ortodoncia":          { general_dentistry: 1, orthodontics: 1 },
+  "Periodoncia":         { general_dentistry: 1, periodontics: 1 },
 };
 
 export async function seed() {

@@ -19,7 +19,7 @@
  * Ejecutar: npx tsx --env-file=.env scripts/seed-catalog.ts
  */
 
-import { prisma } from "../lib/prisma";
+import { prismaAdmin as prisma } from "../lib/prisma";
 import { getCurrentClinicId } from "../lib/tenant";
 
 const PRICE_BY_CODE: Record<string, number> = {
