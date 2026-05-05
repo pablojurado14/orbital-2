@@ -1,4 +1,4 @@
-import { prisma } from "./prisma";
+import { prismaAdmin as prisma } from "./prisma";
 import bcrypt from "bcryptjs";
 
 const CAPABILITIES_BY_SPECIALTY: Record<string, Record<string, number>> = {
