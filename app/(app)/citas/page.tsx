@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { withClinic } from "@/lib/tenant-prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import CitasClient from "./CitasClient";
 
@@ -6,28 +6,31 @@ export const dynamic = "force-dynamic";
 
 export default async function CitasPage() {
   const clinicId = await getCurrentClinicId();
-
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 
-  const [appointmentsRaw, gabinetes, patients, dentists, treatments] = await Promise.all([
-    prisma.appointment.findMany({
-      where: { clinicId, date: { gte: today, lt: tomorrow } },
-      include: {
-        gabinete: true,
-        patient: true,
-        dentist: true,
-        treatmentType: true,
-      },
-      orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
-    }),
-    prisma.gabinete.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-    prisma.patient.findMany({ where: { clinicId }, orderBy: { name: "asc" } }),
-    prisma.dentist.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-    prisma.treatmentType.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-  ]);
+  const [appointmentsRaw, gabinetes, patients, dentists, treatments] = await withClinic(
+    clinicId,
+    (tx) =>
+      Promise.all([
+        tx.appointment.findMany({
+          where: { clinicId, date: { gte: today, lt: tomorrow } },
+          include: {
+            gabinete: true,
+            patient: true,
+            dentist: true,
+            treatmentType: true,
+          },
+          orderBy: [{ gabineteId: "asc" }, { startTime: "asc" }],
+        }),
+        tx.gabinete.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+        tx.patient.findMany({ where: { clinicId }, orderBy: { name: "asc" } }),
+        tx.dentist.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+        tx.treatmentType.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+      ]),
+  );
 
   const appointments = appointmentsRaw.map((a) => ({
     id: a.id,

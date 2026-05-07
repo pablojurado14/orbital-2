@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { withClinic } from "@/lib/tenant-prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 import { HOURS } from "@/data/mock";
@@ -62,129 +62,115 @@ export async function PATCH(
     const { id: idStr } = await context.params;
     const id = Number(idStr);
     if (!id || Number.isNaN(id)) {
-      return NextResponse.json({ error: "ID de cita inválido" }, { status: 400 });
-    }
-
-    const existing = await prisma.appointment.findFirst({ where: { id, clinicId } });
-    if (!existing) {
-      return NextResponse.json({ error: "Cita no encontrada" }, { status: 404 });
-    }
-    if (existing.status === "cancelled") {
-      return NextResponse.json(
-        { error: "No se puede mover una cita cancelada" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "ID de cita invalido" }, { status: 400 });
     }
 
     const body = await request.json();
 
-    const newStartTime =
-      typeof body?.startTime === "string" ? body.startTime : existing.startTime;
-    const newDuration =
-      typeof body?.duration === "number" && body.duration > 0 ? body.duration : existing.duration;
-    const newGabineteId =
-      Number.isFinite(Number(body?.gabineteId)) && Number(body.gabineteId) > 0
-        ? Number(body.gabineteId)
-        : existing.gabineteId;
-    const newDentistId =
-      Number.isFinite(Number(body?.dentistId)) && Number(body.dentistId) > 0
-        ? Number(body.dentistId)
-        : existing.dentistId;
-    const newTreatmentTypeId =
-      Number.isFinite(Number(body?.treatmentTypeId)) && Number(body.treatmentTypeId) > 0
-        ? Number(body.treatmentTypeId)
-        : existing.treatmentTypeId;
-    const newDate =
-      typeof body?.date === "string" && body.date ? parseDate(body.date) : existing.date;
+    const result = await withClinic(clinicId, async (tx) => {
+      const existing = await tx.appointment.findFirst({ where: { id, clinicId } });
+      if (!existing) return { error: "Cita no encontrada", status: 404 } as const;
+      if (existing.status === "cancelled") {
+        return { error: "No se puede mover una cita cancelada", status: 400 } as const;
+      }
 
-    if (!newDate) {
-      return NextResponse.json({ error: "Fecha inválida (esperado YYYY-MM-DD)" }, { status: 400 });
-    }
-    if (!HOURS.includes(newStartTime)) {
-      return NextResponse.json(
-        {
-          error: `Hora de inicio inválida (debe ser una franja entre ${HOURS[0]} y ${HOURS[HOURS.length - 1]})`,
+      const newStartTime =
+        typeof body?.startTime === "string" ? body.startTime : existing.startTime;
+      const newDuration =
+        typeof body?.duration === "number" && body.duration > 0 ? body.duration : existing.duration;
+      const newGabineteId =
+        Number.isFinite(Number(body?.gabineteId)) && Number(body.gabineteId) > 0
+          ? Number(body.gabineteId)
+          : existing.gabineteId;
+      const newDentistId =
+        Number.isFinite(Number(body?.dentistId)) && Number(body.dentistId) > 0
+          ? Number(body.dentistId)
+          : existing.dentistId;
+      const newTreatmentTypeId =
+        Number.isFinite(Number(body?.treatmentTypeId)) && Number(body.treatmentTypeId) > 0
+          ? Number(body.treatmentTypeId)
+          : existing.treatmentTypeId;
+      const newDate =
+        typeof body?.date === "string" && body.date ? parseDate(body.date) : existing.date;
+
+      if (!newDate) return { error: "Fecha invalida (esperado YYYY-MM-DD)", status: 400 } as const;
+      if (!HOURS.includes(newStartTime)) {
+        return {
+          error: `Hora de inicio invalida (debe ser una franja entre ${HOURS[0]} y ${HOURS[HOURS.length - 1]})`,
+          status: 400,
+        } as const;
+      }
+
+      const [gabinete, dentist, treatment, schedule] = await Promise.all([
+        tx.gabinete.findFirst({ where: { id: newGabineteId, clinicId } }),
+        tx.dentist.findFirst({ where: { id: newDentistId, clinicId } }),
+        tx.treatmentType.findFirst({ where: { id: newTreatmentTypeId, clinicId } }),
+        tx.daySchedule.findUnique({
+          where: { clinicId_dayOfWeek: { clinicId, dayOfWeek: newDate.getDay() } },
+        }),
+      ]);
+      if (!gabinete || !gabinete.active)
+        return { error: "Gabinete no encontrado o inactivo", status: 400 } as const;
+      if (!dentist || !dentist.active)
+        return { error: "Dentista no encontrado o inactivo", status: 400 } as const;
+      if (!treatment || !treatment.active)
+        return { error: "Tratamiento no encontrado o inactivo", status: 400 } as const;
+      if (!schedule)
+        return { error: "No hay horario definido para ese dia de la semana", status: 400 } as const;
+
+      const startMin = hhmmToMinutes(newStartTime);
+      if (startMin === null) return { error: "Hora de inicio invalida", status: 400 } as const;
+      if (!fitsInSchedule(startMin, newDuration, schedule)) {
+        return {
+          error: "La cita no cabe en el horario de la clinica para ese dia",
+          status: 400,
+        } as const;
+      }
+
+      const conflicts = await tx.appointment.findMany({
+        where: {
+          clinicId,
+          gabineteId: newGabineteId,
+          date: newDate,
+          status: { not: "cancelled" },
+          NOT: { id },
         },
-        { status: 400 }
-      );
-    }
+        select: { id: true, startTime: true, duration: true },
+      });
 
-    const [gabinete, dentist, treatment, schedule] = await Promise.all([
-      prisma.gabinete.findFirst({ where: { id: newGabineteId, clinicId } }),
-      prisma.dentist.findFirst({ where: { id: newDentistId, clinicId } }),
-      prisma.treatmentType.findFirst({ where: { id: newTreatmentTypeId, clinicId } }),
-      prisma.daySchedule.findUnique({
-        where: { clinicId_dayOfWeek: { clinicId, dayOfWeek: newDate.getDay() } },
-      }),
-    ]);
-    if (!gabinete || !gabinete.active) {
-      return NextResponse.json({ error: "Gabinete no encontrado o inactivo" }, { status: 400 });
-    }
-    if (!dentist || !dentist.active) {
-      return NextResponse.json({ error: "Dentista no encontrado o inactivo" }, { status: 400 });
-    }
-    if (!treatment || !treatment.active) {
-      return NextResponse.json({ error: "Tratamiento no encontrado o inactivo" }, { status: 400 });
-    }
-    if (!schedule) {
-      return NextResponse.json(
-        { error: "No hay horario definido para ese día de la semana" },
-        { status: 400 }
-      );
-    }
+      const newEnd = startMin + newDuration;
+      const conflict = conflicts.find((a) => {
+        const aStart = hhmmToMinutes(a.startTime);
+        if (aStart === null) return false;
+        const aEnd = aStart + a.duration;
+        return startMin < aEnd && aStart < newEnd;
+      });
+      if (conflict) {
+        return { error: "Ya hay otra cita en ese gabinete a esa hora", status: 409 } as const;
+      }
 
-    const startMin = hhmmToMinutes(newStartTime);
-    if (startMin === null) {
-      return NextResponse.json({ error: "Hora de inicio inválida" }, { status: 400 });
-    }
-    if (!fitsInSchedule(startMin, newDuration, schedule)) {
-      return NextResponse.json(
-        { error: "La cita no cabe en el horario de la clínica para ese día" },
-        { status: 400 }
-      );
-    }
+      const updated = await tx.appointment.update({
+        where: { id },
+        data: {
+          date: newDate,
+          startTime: newStartTime,
+          duration: newDuration,
+          gabineteId: newGabineteId,
+          dentistId: newDentistId,
+          treatmentTypeId: newTreatmentTypeId,
+        },
+      });
 
-    const conflicts = await prisma.appointment.findMany({
-      where: {
-        clinicId,
-        gabineteId: newGabineteId,
-        date: newDate,
-        status: { not: "cancelled" },
-        NOT: { id },
-      },
-      select: { id: true, startTime: true, duration: true },
+      return { ok: true, id: updated.id } as const;
     });
 
-    const newEnd = startMin + newDuration;
-    const conflict = conflicts.find((a) => {
-      const aStart = hhmmToMinutes(a.startTime);
-      if (aStart === null) return false;
-      const aEnd = aStart + a.duration;
-      return startMin < aEnd && aStart < newEnd;
-    });
-    if (conflict) {
-      return NextResponse.json(
-        { error: "Ya hay otra cita en ese gabinete a esa hora" },
-        { status: 409 }
-      );
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
-
-    const updated = await prisma.appointment.update({
-      where: { id },
-      data: {
-        date: newDate,
-        startTime: newStartTime,
-        duration: newDuration,
-        gabineteId: newGabineteId,
-        dentistId: newDentistId,
-        treatmentTypeId: newTreatmentTypeId,
-      },
-    });
 
     revalidatePath("/");
     revalidatePath("/citas");
-
-    return NextResponse.json({ ok: true, id: updated.id });
+    return NextResponse.json({ ok: true, id: result.id });
   } catch (error) {
     console.error("Error moviendo cita:", error);
     return NextResponse.json({ error: "No se pudo mover la cita" }, { status: 500 });

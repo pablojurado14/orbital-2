@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { withClinic } from "@/lib/tenant-prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import PacientesClient from "./PacientesClient";
 
@@ -7,21 +7,25 @@ export const dynamic = "force-dynamic";
 export default async function PacientesPage() {
   const clinicId = await getCurrentClinicId();
 
-  const [pacientes, gabinetes, dentistas, treatments] = await Promise.all([
-    prisma.patient.findMany({
-      where: { clinicId, active: true },
-      include: {
-        waitlistEntries: {
-          where: { clinicId },
-          orderBy: { createdAt: "desc" },
-        },
-      },
-      orderBy: { name: "asc" },
-    }),
-    prisma.gabinete.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-    prisma.dentist.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-    prisma.treatmentType.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
-  ]);
+  const [pacientes, gabinetes, dentistas, treatments] = await withClinic(
+    clinicId,
+    (tx) =>
+      Promise.all([
+        tx.patient.findMany({
+          where: { clinicId, active: true },
+          include: {
+            waitlistEntries: {
+              where: { clinicId },
+              orderBy: { createdAt: "desc" },
+            },
+          },
+          orderBy: { name: "asc" },
+        }),
+        tx.gabinete.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+        tx.dentist.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+        tx.treatmentType.findMany({ where: { clinicId, active: true }, orderBy: { name: "asc" } }),
+      ]),
+  );
 
   const initialPatients = pacientes.map((p) => {
     const entry = p.waitlistEntries[0] ?? null;

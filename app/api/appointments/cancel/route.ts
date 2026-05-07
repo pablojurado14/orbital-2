@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { withClinic } from "@/lib/tenant-prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import { revalidatePath } from "next/cache";
 
@@ -10,43 +10,37 @@ export async function POST(request: NextRequest) {
     const appointmentId = Number(body?.appointmentId);
 
     if (!appointmentId || Number.isNaN(appointmentId)) {
-      return NextResponse.json(
-        { error: "appointmentId inválido" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "appointmentId invalido" }, { status: 400 });
     }
 
-    const existingAppointment = await prisma.appointment.findFirst({
-      where: { id: appointmentId, clinicId },
+    const result = await withClinic(clinicId, async (tx) => {
+      const existingAppointment = await tx.appointment.findFirst({
+        where: { id: appointmentId, clinicId },
+      });
+
+      if (!existingAppointment) {
+        return { error: "Cita no encontrada", status: 404 } as const;
+      }
+      if (existingAppointment.status === "cancelled") {
+        return { error: "La cita ya esta cancelada", status: 400 } as const;
+      }
+
+      await tx.appointment.update({
+        where: { id: appointmentId },
+        data: { status: "cancelled" },
+      });
+
+      return { ok: true } as const;
     });
 
-    if (!existingAppointment) {
-      return NextResponse.json(
-        { error: "Cita no encontrada" },
-        { status: 404 }
-      );
+    if ("error" in result) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
-
-    if (existingAppointment.status === "cancelled") {
-      return NextResponse.json(
-        { error: "La cita ya está cancelada" },
-        { status: 400 }
-      );
-    }
-
-    await prisma.appointment.update({
-      where: { id: appointmentId },
-      data: { status: "cancelled" },
-    });
 
     revalidatePath("/");
-
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Error cancelando cita:", error);
-    return NextResponse.json(
-      { error: "No se pudo cancelar la cita" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "No se pudo cancelar la cita" }, { status: 500 });
   }
 }

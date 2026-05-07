@@ -1,19 +1,23 @@
-import { prisma } from "@/lib/prisma";
+import { withClinic } from "@/lib/tenant-prisma";
 import { getCurrentClinicId } from "@/lib/tenant";
 import HorariosClient from "./HorariosClient";
 
 export default async function HorariosPage() {
   const clinicId = await getCurrentClinicId();
 
-  const clinic = await prisma.clinicSettings.upsert({
-    where: { id: clinicId },
-    update: {},
-    create: { id: clinicId, name: "Mi Clínica Dental" },
-  });
+  const { clinic, schedules } = await withClinic(clinicId, async (tx) => {
+    const clinic = await tx.clinicSettings.upsert({
+      where: { id: clinicId },
+      update: {},
+      create: { id: clinicId, name: "Mi Clinica Dental" },
+    });
 
-  const schedules = await prisma.daySchedule.findMany({
-    where: { clinicId: clinic.id },
-    orderBy: { dayOfWeek: "asc" },
+    const schedules = await tx.daySchedule.findMany({
+      where: { clinicId: clinic.id },
+      orderBy: { dayOfWeek: "asc" },
+    });
+
+    return { clinic, schedules };
   });
 
   return (
